@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MAP · 实验教程</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body data-page="guide">
+<div class="app-shell">
+  <aside></aside>
+  <main>
+    <div class="topbar"><a href="#top">MAP Experiment Guide</a><span>Storage · Preprocess · Preparation · Runs</span></div>
+    <div class="overview overview-map">
+      <header id="top" class="hero map-hero anchor-section">
+        <span class="kicker">END-TO-END WORKFLOW</span>
+        <h1>MAP 实验全流程</h1>
+      </header>
+
+      <section class="map-section" aria-labelledby="map-title">
+        <div class="section-intro"><span>Workflow</span><h2 id="map-title">数据与模型路径</h2></div>
+        <div class="map-scroll" role="region" aria-label="MAP 数据和训练流程图" tabindex="0">
+          <svg id="entity-workspace" class="map-diagram" viewBox="0 0 1140 1054" role="img" aria-labelledby="diagram-title diagram-desc" data-entity="workspace">
+            <title id="diagram-title">MAP 数据、预嵌入、训练与评估流程</title>
+            <desc id="diagram-desc">Tahoe-100M 经 Preprocess 写入通用 materialized 数据，Preparation 建立 workflow、split 与冻结模型缓存，再进入 MAP 训练和下游评估。</desc>
+            <defs>
+              <pattern id="dot-grid" width="13" height="13" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.4" fill="#dfe7e2"></circle></pattern>
+              <marker id="diagram-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z"></path></marker>
+            </defs>
+            <rect width="1140" height="1054" fill="#fbfcfb"></rect>
+            <rect width="1140" height="1054" fill="url(#dot-grid)"></rect>
+
+            <g class="diagram-wires">
+              <path d="M590 65V146" class="arrow"></path>
+              <path d="M535 84H590" class="arrow arrow-to-edge"></path>
+              <path d="M590 108H198V146" class="arrow"></path>
+              <path d="M590 108H905V146" class="arrow"></path>
+              <path d="M254 171H276" class="arrow"></path>
+
+              <path d="M198 195V378" class="arrow"></path>
+              <path d="M264 316H198" class="arrow arrow-to-edge"></path>
+              <path d="M342 316H402" class="arrow arrow-to-edge"></path>
+              <path d="M402 273V378" class="arrow"></path>
+              <path d="M590 195V378" class="arrow"></path>
+
+              <path d="M905 195V234H815V293" class="arrow"></path>
+              <path d="M636 251H590" class="arrow arrow-to-edge"></path>
+              <path d="M773 251H815" class="arrow arrow-to-edge"></path>
+              <path d="M905 234H1008V378" class="arrow"></path>
+              <path d="M969 270H1008" class="arrow arrow-to-edge"></path>
+              <path d="M815 341V378" class="arrow"></path>
+              <path d="M868 362H815" class="arrow arrow-to-edge"></path>
+
+              <path d="M142 171H72V609H198" class="arrow"></path>
+              <path d="M94 564H72" class="arrow arrow-to-edge"></path>
+              <path d="M198 427V665" class="arrow"></path>
+              <path d="M402 427V618H521"></path>
+
+              <path d="M590 427V506H521V535" class="arrow"></path>
+              <path d="M590 506H697V535" class="arrow"></path>
+              <path d="M662 477H590" class="arrow arrow-to-edge"></path>
+              <path d="M521 586V618"></path>
+              <path d="M462 618V665" class="arrow"></path>
+              <path d="M436 643H462" class="arrow arrow-to-edge"></path>
+              <path d="M697 586V665" class="arrow"></path>
+              <path d="M658 643H697" class="arrow arrow-to-edge"></path>
+
+              <path d="M198 708V741H697"></path>
+              <path d="M462 708V741"></path>
+              <path d="M697 708V741"></path>
+              <path d="M462 741V790" class="arrow"></path>
+              <path d="M493 765H462" class="arrow arrow-to-edge"></path>
+              <path d="M329 780V810" class="arrow"></path>
+              <path d="M382 810H278" class="arrow arrow-to-edge"></path>
+
+              <path d="M554 810H815"></path>
+              <path d="M815 427V902" class="arrow"></path>
+              <path d="M198 836V863H1008"></path>
+              <path d="M1008 427V863"></path>
+              <path d="M517 863V990" class="arrow"></path>
+            </g>
+
+            <line id="phase-preparation" x1="28" y1="453" x2="1112" y2="453" class="phase-divider"></line>
+            <line id="entity-runs" x1="28" y1="962" x2="1112" y2="962" class="phase-divider" data-entity="runs"></line>
+
+            <g class="merge-points"><circle cx="462" cy="618" r="7"></circle><circle cx="462" cy="741" r="7"></circle><circle cx="815" cy="810" r="7"></circle><circle cx="517" cy="863" r="7"></circle><circle cx="815" cy="863" r="7"></circle></g>
+
+            <g id="entity-raw" class="diagram-node node-source" data-entity="raw"><rect x="532" y="16" width="116" height="49"></rect><text x="590" y="41">Tahoe-100M</text></g>
+            <g class="diagram-node node-action"><rect x="390" y="62" width="145" height="44"></rect><text x="462.5" y="84">Preprocess</text></g>
+            <g id="entity-condition" class="diagram-node node-contract" data-entity="condition"><rect x="142" y="147" width="112" height="48"></rect><text x="198" y="171">Condition</text></g>
+            <g id="entity-splits" class="diagram-node node-action" data-entity="splits"><rect x="276" y="149" width="56" height="44"></rect><text x="304" y="171">Split</text></g>
+            <g id="entity-control" class="diagram-node node-contract" data-entity="control"><rect x="534" y="147" width="112" height="48"></rect><text x="590" y="171">Control Cell</text></g>
+            <g id="entity-condition-cell" class="diagram-node node-contract" data-entity="conditionCell"><rect x="840" y="147" width="130" height="48"></rect><text x="905" y="171">Condition Cell</text></g>
+
+            <g id="entity-esm2" class="diagram-node node-model" data-entity="esm2"><rect x="367" y="225" width="70" height="48"></rect><text x="402" y="249">ESM2</text></g>
+            <g id="entity-mapkg" class="diagram-node node-model" data-entity="mapkg"><rect x="264" y="292" width="78" height="48"></rect><text x="303" y="316">MAP-KG</text></g>
+            <g class="diagram-node node-action"><rect x="636" y="222" width="137" height="59"></rect><text x="704.5" y="243"><tspan x="704.5">Cell-wise gene</tspan><tspan x="704.5" dy="19">selection</tspan></text></g>
+            <g id="entity-hvg" class="diagram-node node-action" data-entity="hvg"><rect x="844" y="246" width="125" height="48"></rect><text x="906.5" y="270">HVG selection</text></g>
+            <g class="diagram-node node-artifact"><rect x="735" y="293" width="160" height="48"></rect><text x="815" y="317">Condition Cell 2048</text></g>
+            <g id="entity-frozen" class="diagram-node node-model" data-entity="frozen"><rect x="868" y="338" width="76" height="48"></rect><text x="906" y="362">SE-600M</text></g>
+
+            <g id="entity-drug-cache" class="diagram-node node-artifact" data-entity="drugCache"><rect x="106" y="378" width="184" height="49"></rect><text x="198" y="402.5">Drug-Knowledge token</text></g>
+            <g id="entity-gene-cache" class="diagram-node node-artifact" data-entity="geneCache"><rect x="308" y="378" width="190" height="49"></rect><text x="403" y="402.5">Gene-Knowledge token</text></g>
+            <g class="diagram-node node-artifact"><rect x="518" y="378" width="144" height="49"></rect><text x="590" y="402.5">Control Cell 2048</text></g>
+            <g id="entity-cell-cache" class="diagram-node node-artifact" data-entity="cellCache"><rect x="735" y="378" width="160" height="49"></rect><text x="815" y="402.5">Perturbed Cell Embed</text></g>
+            <g class="diagram-node node-artifact"><rect x="947" y="378" width="122" height="49"></rect><text x="1008" y="402.5">Condition HVG</text></g>
+
+            <g class="internal-text"><text x="138" y="564">log(dose+1)</text><text x="700" y="477">SE-600M</text><text x="521" y="561">Gene-wise STATE token</text><text x="697" y="561">Control Embed</text><text x="413" y="643">GRF</text><text x="608" y="643">Cell Projector</text><text x="198" y="688">Drug token</text><text x="462" y="688">Gene token</text><text x="697" y="688">Cell token</text><text x="560" y="765">Llama Transformer</text><text x="329" y="765">HVG Decoder</text><text x="198" y="810">Pred Condition HVG</text><text x="463" y="810">Pred Condition Embed</text><text x="815" y="926">Pseudo-bulk MSE</text></g>
+
+            <g id="entity-evaluations" class="diagram-node node-evaluation" data-entity="evaluations"><rect x="453" y="990" width="128" height="48"></rect><text x="517" y="1014">Eval &amp; Analysis</text></g>
+          </svg>
+        </div>
+      </section>
+
+    </div>
+
+    <div class="guide-page concise-guide">
+      <header id="environment" class="detail-stage"><span>00</span><h2>Environment</h2></header>
+      <section id="stage-jobs" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>01</span><div><h2>Local and scheduled execution</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>#!/usr/bin/env bash
+# job.sh
+set -euo pipefail
+
+source /path/to/conda.sh
+conda activate map
+cd /path/to/MAP
+
+srun "$@"</code></pre></div><pre class="real-output"><b>调用</b>
+Local
+map preprocess tahoe statistics
+
+Slurm · any stage
+sbatch --cpus-per-task=8 job.sh map preprocess ...
+sbatch --gres=gpu:1 job.sh map preparation ...
+sbatch --gres=gpu:4 job.sh map train ... --gpus 4
+sbatch --gres=gpu:1 job.sh map eval ...
+
+CPU, memory, time and GPU requests remain submission options.</pre></div>
+      </section>
+
+      <section id="install" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>02</span><div><h2>Install</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code># MAP
+python -m pip install -r requirements-map.txt
+python -m pip install -e .
+
+# MAP + PRnet / chemCPA / TrainMean / CRISP / XPert / CMonge
+python -m pip install -r requirements-map-baselines.txt
+python -m pip install -e .</code></pre></div><pre class="real-output"><b>目录</b>
+storage/raw_datasets/
+storage/frozen_models/
+storage/projects/
+storage/toy_runs/</pre></div>
+      </section>
+
+      <section id="assets" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>03</span><div><h2>Data &amp; frozen assets</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code># The repository only requires this layout; storage/ may be a symlink to your large-data location.
+storage/
+├── raw_datasets/Tahoe-100M/
+├── frozen_models/
+│   ├── se600m.safetensors
+│   ├── Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt
+│   ├── mapkg_encoder_v3.pt
+│   ├── bart_vocab.txt
+│   └── unimol/{mol_pre_all_h_220816.pt,mol.dict.txt}
+└── reference_data/xpert/
+    ├── 9606.protein.links.v12.0.txt.gz
+    ├── 9606.protein.info.v12.0.txt.gz
+    └── primekg.csv</code></pre></div><pre class="real-output"><b>下载</b>
+<a href="https://huggingface.co/datasets/tahoebio/Tahoe-100M">Tahoe-100M</a> → storage/raw_datasets/Tahoe-100M/
+<a href="https://www.kaggle.com/competitions/open-problems-single-cell-perturbations/data">OP3</a> → storage/raw_datasets/OP3/
+<a href="https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSM4150378">SciPlex3</a> → storage/raw_datasets/SciPlex3/
+<a href="https://drive.google.com/drive/folders/1cV0ZTk92PguKS2nyii6dLV0IfqoSDHsQ?usp=drive_link">MAP released weights</a> → storage/frozen_models/
+<a href="https://raw.githubusercontent.com/MolecularAI/MolBART/master/bart_vocab.txt">bart_vocab.txt</a> → storage/frozen_models/bart_vocab.txt
+<a href="https://stringdb-downloads.org/download/protein.links.v12.0/9606.protein.links.v12.0.txt.gz">STRING links</a> + <a href="https://stringdb-downloads.org/download/protein.info.v12.0/9606.protein.info.v12.0.txt.gz">names</a> → storage/reference_data/xpert/
+<a href="https://dataverse.harvard.edu/api/access/datafile/6180620">PrimeKG</a> → storage/reference_data/xpert/primekg.csv
+<a href="https://huggingface.co/dptech/Uni-Mol-Models/resolve/main/mol_pre_all_h_220816.pt">UniMol checkpoint</a> + <a href="https://huggingface.co/dptech/Uni-Mol-Models/resolve/main/mol.dict.txt">dictionary</a> → storage/frozen_models/unimol/</pre></div>
+      </section>
+
+      <section id="toy-workflow" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>04</span><div><h2>Run the toy workflow</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>./toy.sh --dataset tahoe \
+  --models map prnet chemcpa trainmean crisp xpert cmonge</code></pre></div><pre class="real-output"><b>输出</b>
+[toy] root=storage/toy_runs/toy-&lt;timestamp&gt;-&lt;id&gt;
+status   pass
+
+storage/toy_runs/toy-&lt;timestamp&gt;-&lt;id&gt;/
+├── raw_datasets/Tahoe-100M/
+├── projects/toy-e2e/materialized/
+├── projects/toy-e2e/runs/
+├── projects/toy-e2e/evaluations/
+└── toy_e2e_summary.json</pre></div>
+      </section>
+
+      <header id="preprocess" class="detail-stage"><span>01</span><h2>Preprocess</h2></header>
+
+      <section id="data-statistics" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>01</span><div><h2>Data statistics</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>from map import preprocess
+
+summary = preprocess.tahoe.statistics(
+    batch_size=8192,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+cells             95,624,334
+genes                 62,710
+cell lines                 52
+control cells      9,305,932
+condition cells   86,318,402
+drugs                  6,240
+cell_line_ids  [CVCL_0004, CVCL_0014, ..., CVCL_1098]
+storage/raw_datasets/Tahoe-100M/data_summary.json
+storage/raw_datasets/Tahoe-100M/cell_lines.parquet
+storage/raw_datasets/Tahoe-100M/conditions.parquet</pre></div>
+      </section>
+
+      <section id="fetch-cell-line" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>02</span><div><h2>Fetch cell line</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>project_name = "six-lines-unprofiled"
+
+preprocess.tahoe.fetch_cell_line([
+    "CVCL_1098", "CVCL_1056", "CVCL_0131",
+    "CVCL_0069", "CVCL_0023", "CVCL_0480",
+], project_name=project_name)</code></pre></div><pre class="real-output"><b>输出</b>
+cell lines   6
+cells        14,502,175
+conditions   6,784
+drugs        1,164
+storage/projects/six-lines-unprofiled/preprocess.json
+storage/projects/six-lines-unprofiled/selection.json
+storage/projects/six-lines-unprofiled/conditions.parquet</pre></div>
+      </section>
+
+      <section id="hvg-selection" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>03</span><div><h2>HVG selection</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preprocess.tahoe.select_hvg(
+    project_name,
+    n_top_genes=2_000,
+    workers=8,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+method      Seurat v3
+HVG genes  2,000
+storage/projects/six-lines-unprofiled/materialized/hvg.json
+storage/projects/six-lines-unprofiled/materialized/hvg_state_ids.npy</pre></div>
+      </section>
+
+      <section id="materialize" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>04</span><div><h2>Materialize cells</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preprocess.tahoe.materialize(
+    project_name,
+    num_gene_tokens=2_048,
+    target_sum=10_000,
+    workers=8,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+storage/projects/six-lines-unprofiled/contract.json
+materialized/&lt;population&gt;/se_gene_ids.uint16.dat
+materialized/&lt;population&gt;/se_expr.float16.dat
+materialized/&lt;population&gt;/hvg.float16.dat
+materialized/materialized_shapes.json</pre></div>
+      </section>
+
+      <header id="preparation" class="detail-stage"><span>02</span><h2>Preparation</h2></header>
+
+      <section id="create-workflow" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>01</span><div><h2>Create workflow</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>from map import preparation
+
+workflow = preparation.create_workflow(
+    project_name,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+project      six-lines-unprofiled
+data         materialized/
+runs         runs/
+evaluations  evaluations/
+storage/projects/six-lines-unprofiled/workflow.json</pre></div>
+      </section>
+
+      <section id="sampling-index" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>02</span><div><h2>Sampling index</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preparation.build_sampling_index(
+    workflow,
+    workers=8,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+materialized/conditions.parquet
+materialized/&lt;population&gt;/condition_ids.npy
+materialized/&lt;population&gt;/condition_offsets.npy
+materialized/&lt;population&gt;/condition_rows.npy
+materialized/&lt;population&gt;/control_group_rows.npy</pre></div>
+      </section>
+
+      <section id="split" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>03</span><div><h2>Create split</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>split = preparation.create_split(
+    workflow,
+    rule="unprofiled_drug",
+    test_size=16,
+    val_size=16,
+    seed=42,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+train    6,208 conditions
+val        288 · 16 drugs
+test       288 · 16 drugs
+materialized/splits/
+unprofiled_drug__test-n16__val-n16__seed-42.json</pre></div>
+      </section>
+
+      <section id="knowledge-gene" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>04</span><div><h2>Precache gene tokens</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preparation.precache_gene_tokens(
+    workflow,
+    partition_index=0,
+    num_partitions=4,
+    batch_size=512,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+ESM2 → frozen MAP-KG gene projector
+partition   1 / 4
+token dim   1,024
+materialized/static_token_parts/genes/
+part-00000-of-00004.pt</pre></div>
+      </section>
+
+      <section id="knowledge-drug" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>05</span><div><h2>Precache condition tokens</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preparation.precache_drug_tokens(
+    workflow,
+    partition_index=0,
+    num_partitions=4,
+    batch_size=32,
+)
+preparation.merge_knowledge_tokens(
+    workflow,
+    gene_partitions=4,
+    drug_partitions=4,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+SMILES → frozen MolSTM → molecule projector
+Gene tokens   19,790 × 1,024
+Drug tokens    1,164 × 1,024
+materialized/map_static_tokens.pt</pre></div>
+      </section>
+
+      <section id="state-cache" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>06</span><div><h2>Precache condition embeddings</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preparation.precache_state_embeddings(
+    workflow,
+    partition_index=0,
+    num_partitions=4,
+    batch_size=32,
+    workers=8,
+)
+preparation.merge_state_embeddings(
+    workflow,
+    num_partitions=4,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+condition cells → frozen SE-600M
+embedding dim   2,048
+training target perturbed-cell embedding
+materialized/&lt;population&gt;/state_embeddings.float16.dat</pre></div>
+      </section>
+
+      <section id="validate" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>07</span><div><h2>Validate preparation</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preparation.validate(
+    workflow,
+    split_files=[split.summary["split_file"]],
+)</code></pre></div><pre class="real-output"><b>输出</b>
+status   pass
+materialized/preparation_validation.json
+materialized/_SUCCESS</pre></div>
+      </section>
+
+      <section id="baseline-preparation" class="chapter-section anchor-section lesson optional-lesson">
+        <div class="lesson-head"><span>08</span><div><h2>Baseline inputs</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>preparation.prepare_baseline_inputs(
+    workflow,
+    models=("prnet", "chemcpa", "trainmean", "crisp", "xpert", "cmonge"),
+)</code></pre></div><pre class="real-output"><b>可选输出</b>
+PRnet     FCFP4-1024
+chemCPA   frozen ECFP4-1024
+TrainMean training-split pseudobulk mean
+CRISP     standardized RDKit2D → PertAE
+XPert     STRING PPI + PrimeKG DTI + DDS + UniMol
+CMonge    standardized RDKit2D drug context
+materialized/baselines/&lt;model&gt;/manifest.json</pre></div>
+      </section>
+
+      <header id="train" class="detail-stage"><span>03</span><h2>Training</h2></header>
+      <section id="train-run" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>01</span><div><h2>Start a run</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>from map import train
+
+run = train.run(
+    workflow,
+    run_name="map-unprofiled-seed42",
+    regime="unprofiled_drug",
+    split_file=split.summary["split_file"],
+    set_size=24,
+    batch_size=1,
+    gradient_accumulation_steps=2,
+    lr=1e-5,
+    hvg_loss_weight=0.1,
+    max_steps=100_000,
+    warmup_steps=10_000,
+    gpus=4,
+    num_workers=6,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+model        map (default)
+run          map-unprofiled-seed42
+runs/map-unprofiled-seed42/run_config.json
+runs/map-unprofiled-seed42/best.pt
+runs/map-unprofiled-seed42/last.pt
+
+Baseline runs use the same call with model="prnet", "chemcpa",
+"trainmean", "crisp", "xpert", or "cmonge". CMonge first pretrains
+the expression autoencoder for 50 epochs, then learns single-cell transport.</pre></div>
+      </section>
+
+      <header id="evaluation" class="detail-stage"><span>04</span><h2>Evaluation &amp; Analysis</h2></header>
+      <section id="evaluate-run" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>01</span><div><h2>Evaluate a run</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>from map import eval
+
+result = eval.run(
+    workflow,
+    run_name="map-unprofiled-seed42",
+    seeds=(42, 43, 44, 45, 46),
+    set_size=24,
+    deg_top_k=50,
+    deg_fdr=0.05,
+)</code></pre></div><pre class="real-output"><b>输出</b>
+checkpoint   runs/map-unprofiled-seed42/best.pt
+model        inferred from run_config.json
+split        inferred from run_config.json
+evaluations/map-unprofiled-seed42/evaluation.json
+evaluations/map-unprofiled-seed42/runs.csv
+evaluations/map-unprofiled-seed42/predictions_seed42.parquet</pre></div>
+      </section>
+
+      <details class="metric-definitions">
+        <summary>指标定义</summary>
+        <div class="metric-table-wrap">
+          <table>
+            <thead>
+              <tr><th>指标</th><th>方向</th><th>定义</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>HVG Pearson Δ</td><td>越高越好</td><td>预测与真实扰动响应差值在 HVG 上的 Pearson 相关。</td></tr>
+              <tr><td>HVG Direction Accuracy</td><td>越高越好</td><td>预测与真实响应方向（上调、下调或不变）一致的 HVG 比例。</td></tr>
+              <tr><td>HVG PDS</td><td>越高越好</td><td>扰动识别分数：真实配对相对其他配对的距离排名能力。</td></tr>
+              <tr><td>Top-k DEG Pearson Δ</td><td>越高越好</td><td>在显著 DEG 中按真实效应量选取前 k 个（示例为 50）后的 Δ Pearson 相关。</td></tr>
+              <tr><td>Top-k DEG Direction Accuracy</td><td>越高越好</td><td>Top-k DEG 的预测和真实响应方向一致率。</td></tr>
+              <tr><td>R² / PCC</td><td>越高越好</td><td>预测表达与真实表达的决定系数 / Pearson 相关。</td></tr>
+              <tr><td>MSE</td><td>越低越好</td><td>预测与真实表达值的均方误差。</td></tr>
+              <tr><td>Wasserstein Distance</td><td>越低越好</td><td>预测与真实表达分布之间的一维 Wasserstein 距离。</td></tr>
+              <tr><td>MMD</td><td>越低越好</td><td>基于 RBF 核的最大均值差异，衡量两组表达样本分布差异。</td></tr>
+              <tr><td>Sinkhorn Distance</td><td>越低越好</td><td>带熵正则的最优传输距离，用于比较预测和真实表达分布。</td></tr>
+              <tr><td>CSS</td><td>越低越好</td><td>预测与真实响应协方差矩阵的归一化 Frobenius 差异，描述 HVG 共表达/变异结构差异。</td></tr>
+              <tr><td>DEG AUROC / AUPRC</td><td>越高越好</td><td>用预测效应量区分显著 DEG 与非 DEG 的 ROC-AUC / PR-AUC。</td></tr>
+              <tr><td>Top-k DEG Overlap</td><td>越高越好</td><td>预测效应量排名前 k 与真实 Top-k DEG 的集合重叠比例。</td></tr>
+              <tr><td>Disentanglement Score</td><td>越高越好</td><td>预测响应中细胞群体和药物因素的可加分离程度。</td></tr>
+              <tr><td>Biological Score</td><td>越高越好</td><td>按细胞群体汇总的响应相关性、方向一致性和效应量相关性的综合分数。</td></tr>
+              <tr><td>Conditions per Second</td><td>越高越好</td><td>单位时间完成评估的 condition 数量。</td></tr>
+              <tr><td>Peak GPU Memory</td><td>越低越好</td><td>评估过程中观测到的 GPU 峰值显存占用。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <section id="analysis" class="chapter-section anchor-section lesson">
+        <div class="lesson-head"><span>02</span><div><h2>Build analysis report</h2></div></div>
+        <div class="lesson-body"><div class="code-block"><button class="copy" type="button">复制</button><pre><code>eval.analyze(
+    workflow,
+    prediction_file=result.summary["prediction_files"][0],
+    evaluation_files=[result.summary["evaluation_file"]],
+    output_name="map-unprofiled-seed42",
+)</code></pre></div><pre class="real-output"><b>输出</b>
+response metrics · pseudo-bulk metrics · DEG overlap
+evaluations/reports/map-unprofiled-seed42/report.html
+evaluations/reports/map-unprofiled-seed42/analysis_tables.xlsx
+evaluations/reports/map-unprofiled-seed42/figures/</pre></div>
+      </section>
+
+      <nav class="details-footer"><a href="#top">返回流程图 ↑</a></nav>
+    </div>
+  </main>
+</div>
+<script src="assets/site.js"></script>
+</body>
+</html>
