@@ -1,0 +1,6 @@
+# MAP plus PRnet, chemCPA, TrainMean, CRISP, XPert and CMonge.
+-r requirements-map.txt
+descriptastorus>=2.8,<3
+geomloss>=0.3,<0.4
+unimol-tools>=0.1.6,<0.2
+torch-geometric>=2.6,<3
