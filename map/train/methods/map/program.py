@@ -1,0 +1,480 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import random
+import time
+from contextlib import nullcontext
+from pathlib import Path
+
+import numpy as np
+import torch
+import torch.distributed as dist
+import torch.nn as nn
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import Adam
+from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
+
+from ...._common.dataset import MAPDataset
+from ....model.map import MAPModel
+
+
+MAP_TRAIN_FIELDS = frozenset({
+    "control_gene_ids",
+    "control_expressions",
+    "condition_embeddings",
+    "condition_hvg_vectors",
+})
+
+MAP_COMPILE_PARTS = (
+    "state.model",
+    "pert_model.cell_projector",
+    "pert_model.gene_tokens_projector",
+    "pert_model.transformer_backbone",
+    "pert_model.project_out",
+    "pert_model.gene_decoder",
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train MAP over the prepared data contract")
+    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--split-file", required=True)
+    parser.add_argument("--train-split", default="train")
+    parser.add_argument(
+        "--regime", choices=("unprofiled_drug", "unseen_combination"), required=True
+    )
+    parser.add_argument("--populations", nargs="+")
+    parser.add_argument("--se-ckpt", required=True)
+    parser.add_argument("--esm-embeddings", required=True)
+    parser.add_argument("--mapkg-ckpt", required=True)
+    parser.add_argument("--mapkg-vocab", required=True)
+    parser.add_argument("--static-token-cache", required=True)
+    parser.add_argument("--preparation-config")
+    parser.add_argument("--resume")
+    parser.add_argument("--set-size", type=int, default=24)
+    parser.add_argument("--num-gene-tokens", type=int, default=2048)
+    parser.add_argument("--hvg-dim", type=int, default=2000)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--hvg-loss-weight", type=float, default=0.1)
+    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--max-steps", type=int, default=100_000)
+    parser.add_argument("--warmup-steps", type=int, default=10_000)
+    parser.add_argument(
+        "--scheduler-total-steps",
+        type=int,
+        help="Optional fixed cosine horizon for controlled short-run ablations.",
+    )
+    parser.add_argument("--checkpoint-every-epochs", type=int, default=5)
+    parser.add_argument("--samples-per-epoch", type=int)
+    parser.add_argument("--num-workers", type=int, default=6)
+    parser.add_argument("--log-every-steps", type=int, default=50)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--amp-dtype", choices=("bf16", "fp16"), default="bf16")
+    parser.add_argument(
+        "--compile-mode", choices=("none", "default"), default="default"
+    )
+    return parser.parse_args()
+
+
+def setup_distributed() -> tuple[int, int, int]:
+    if "RANK" not in os.environ:
+        return 0, 1, 0
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ["LOCAL_RANK"])
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group("nccl")
+    else:
+        local_rank = 0
+        dist.init_process_group("gloo")
+    return rank, world_size, local_rank
+
+
+def seed_everything(seed: int, rank: int) -> None:
+    effective = int(seed) + int(rank)
+    random.seed(effective)
+    np.random.seed(effective)
+    torch.manual_seed(effective)
+    torch.cuda.manual_seed_all(effective)
+
+
+def precision(device: torch.device, dtype: torch.dtype):
+    return (
+        torch.autocast(device_type="cuda", dtype=dtype)
+        if device.type == "cuda"
+        else nullcontext()
+    )
+
+
+def cosine_schedule(optimizer, warmup_steps: int, total_steps: int, minimum_ratio=0.1):
+    def scale(step: int) -> float:
+        if step < warmup_steps:
+            return float(step) / max(1, warmup_steps)
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        return max(minimum_ratio, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+    return LambdaLR(optimizer, scale)
+
+
+def compute_loss(pred_embedding, true_embedding, pred_hvg, true_hvg, hvg_weight):
+    embedding_loss = nn.functional.mse_loss(
+        pred_embedding.float().mean(1), true_embedding.float().mean(1)
+    )
+    expression_loss = nn.functional.mse_loss(
+        pred_hvg.float().mean(1), true_hvg.float().mean(1)
+    )
+    return (
+        embedding_loss + hvg_weight * expression_loss,
+        embedding_loss,
+        expression_loss,
+    )
+
+
+def move_batch(batch: dict, device: torch.device):
+    doses = batch["drug_conc"]
+    if not torch.isfinite(doses).all() or (doses < 0).any():
+        raise ValueError("Drug doses must be finite and non-negative")
+    return (
+        batch["control_gene_ids"].to(device, non_blocking=True),
+        batch["control_expressions"].to(device, non_blocking=True),
+        batch["condition_embeddings"].to(device, non_blocking=True),
+        batch["condition_hvg_vectors"].to(device, non_blocking=True),
+        list(batch["drug_smiles"]),
+        doses.to(device, non_blocking=True, dtype=torch.float32),
+    )
+
+
+def compile_map_parts(model: MAPModel, mode: str) -> tuple[str, ...]:
+    """Compile stable tensor-only MAP segments without wrapping the modules."""
+    if mode == "none":
+        return ()
+    if mode != "default":
+        raise ValueError(f"Unsupported MAP compile mode: {mode}")
+    modules = (
+        model.state.model,
+        model.pert_model.cell_projector,
+        model.pert_model.gene_tokens_projector,
+        model.pert_model.transformer_backbone,
+        model.pert_model.project_out,
+        model.pert_model.gene_decoder,
+    )
+    options = {"mode": mode, "fullgraph": True, "dynamic": False}
+    for module in modules:
+        module.compile(**options)
+    return MAP_COMPILE_PARTS
+
+
+def checkpoint_payload(model, optimizer, scheduler, scaler, args, epoch, step):
+    raw_model = model.module if isinstance(model, DDP) else model
+    return {
+        "format": "map_method_4_4_v1",
+        "epoch": int(epoch),
+        "global_step": int(step),
+        "pert_model_state_dict": raw_model.pert_model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "args": vars(args),
+    }
+
+
+def save_checkpoint(path: Path, *args) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    torch.save(checkpoint_payload(*args), temporary)
+    os.replace(temporary, path)
+
+
+def load_checkpoint(path: str | Path, model, optimizer, scheduler, scaler) -> dict:
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if checkpoint.get("format") != "map_method_4_4_v1":
+        raise ValueError("Only Method 4.4 checkpoints are supported")
+    raw_model = model.module if isinstance(model, DDP) else model
+    raw_model.pert_model.load_state_dict(
+        checkpoint["pert_model_state_dict"], strict=True
+    )
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    if "scaler_state_dict" in checkpoint:
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
+    return checkpoint
+
+
+def main() -> None:
+    args = parse_args()
+    if min(
+        args.set_size,
+        args.batch_size,
+        args.gradient_accumulation_steps,
+        args.log_every_steps,
+    ) <= 0:
+        raise ValueError(
+            "set_size, batch_size, gradient accumulation and log interval "
+            "must be positive"
+        )
+    if args.lr <= 0 or args.hvg_loss_weight < 0:
+        raise ValueError("lr must be positive and hvg_loss_weight non-negative")
+    if (
+        args.max_steps <= 0
+        or args.epochs <= 0
+        or args.checkpoint_every_epochs <= 0
+        or args.warmup_steps < 0
+        or (
+            args.scheduler_total_steps is not None
+            and args.scheduler_total_steps <= 0
+        )
+    ):
+        raise ValueError("Invalid epochs/max_steps/warmup_steps")
+    output_dir = Path(args.output_dir)
+    if output_dir.exists() and any(output_dir.iterdir()) and not args.resume:
+        raise FileExistsError(f"Run directory is not empty: {output_dir}")
+
+    rank, world_size, local_rank = setup_distributed()
+    if world_size != 4 and rank == 0:
+        print(f"Method 4.4 used four GPUs; current world_size={world_size}", flush=True)
+    seed_everything(args.seed, rank)
+    device = torch.device(
+        f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
+    )
+    amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
+
+    common = {
+        "data_dir": args.data_dir,
+        "regime": args.regime,
+        "set_size": args.set_size,
+        "seed": args.seed,
+        "populations": args.populations,
+        "split_file": args.split_file,
+    }
+    training = MAPDataset(
+        split=args.train_split,
+        training=True,
+        samples_per_epoch=args.samples_per_epoch,
+        fields=MAP_TRAIN_FIELDS,
+        **common,
+    )
+    train_sampler = DistributedSampler(
+        training, num_replicas=world_size, rank=rank, shuffle=True,
+        seed=args.seed, drop_last=True,
+    )
+    loader_options = {
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "pin_memory": device.type == "cuda",
+        "persistent_workers": args.num_workers > 0,
+    }
+    train_loader = DataLoader(training, sampler=train_sampler, **loader_options)
+
+    model = MAPModel(
+        se_checkpoint=args.se_ckpt,
+        esm_embeddings=args.esm_embeddings,
+        mapkg_checkpoint=args.mapkg_ckpt,
+        mapkg_vocab=args.mapkg_vocab,
+        static_token_cache=args.static_token_cache,
+        num_gene_tokens=args.num_gene_tokens,
+        hvg_dim=args.hvg_dim,
+    )
+    if device.type == "cuda":
+        model.state.to(dtype=amp_dtype)
+        model.pert_model.mapkg_encoder.to(dtype=amp_dtype)
+    model = model.to(device)
+    compile_enabled = args.compile_mode != "none" and device.type == "cuda"
+    compiled_parts = (
+        compile_map_parts(model, args.compile_mode) if compile_enabled else ()
+    )
+    ddp_static_graph = world_size > 1 and args.gradient_accumulation_steps == 1
+    if world_size > 1:
+        # DDP static_graph inserts a first-iteration sink even inside no_sync().
+        # With gradient accumulation that can finalize a reducer which was not
+        # prepared for backward. Dynamic DDP keeps segmented torch.compile while
+        # preserving the documented no_sync() behavior.
+        model = DDP(
+            model, device_ids=[local_rank], output_device=local_rank,
+            broadcast_buffers=False,
+            gradient_as_bucket_view=True,
+            static_graph=ddp_static_graph,
+        )
+    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    optimizer = Adam(trainable, lr=args.lr, fused=device.type == "cuda")
+    steps_per_epoch = max(
+        1, math.ceil(len(train_loader) / args.gradient_accumulation_steps)
+    )
+    total_steps = min(args.max_steps, args.epochs * steps_per_epoch)
+    scheduler_total_steps = args.scheduler_total_steps or total_steps
+    if args.warmup_steps >= scheduler_total_steps:
+        raise ValueError("warmup_steps must be smaller than the cosine schedule horizon")
+    scheduler = cosine_schedule(optimizer, args.warmup_steps, scheduler_total_steps)
+    scaler = torch.amp.GradScaler(
+        device.type,
+        enabled=device.type == "cuda" and args.amp_dtype == "fp16",
+    )
+
+    start_epoch = 0
+    global_step = 0
+    if args.resume:
+        checkpoint = load_checkpoint(args.resume, model, optimizer, scheduler, scaler)
+        start_epoch = int(checkpoint["epoch"]) + 1
+        global_step = int(checkpoint["global_step"])
+
+    if rank == 0:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        preparation = (
+            json.loads(Path(args.preparation_config).read_text(encoding="utf-8"))
+            if args.preparation_config else {}
+        )
+        config = {
+            **vars(args),
+            "model": "map",
+            "run_name": output_dir.name,
+            "split_file": str(training.split_file),
+            "split_id": training.split_id,
+            "split_rule": training.split_manifest.get("rule"),
+            "split_seed": training.split_manifest.get("seed"),
+            "world_size": world_size,
+            "effective_batch_size": (
+                args.batch_size * args.gradient_accumulation_steps * world_size
+            ),
+            "compile_enabled": compile_enabled,
+            "compiled_parts": list(compiled_parts),
+            "ddp_static_graph": ddp_static_graph,
+            "resolved_scheduler_total_steps": scheduler_total_steps,
+            "preparation_id": preparation.get("preparation_id"),
+            "preparation": preparation,
+        }
+        (output_dir / "run_config.json").write_text(
+            json.dumps(config, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        print(
+            f"parameters total={sum(p.numel() for p in model.parameters()):,} "
+            f"trainable={sum(p.numel() for p in trainable):,}; "
+            f"train_conditions={len(training.condition_ids):,} "
+            "test_sets_not_loaded=True",
+            flush=True,
+        )
+
+    optimizer.zero_grad(set_to_none=True)
+    last_epoch = max(start_epoch - 1, 0)
+    log_started = time.perf_counter()
+    logged_steps = global_step
+    logged_micro_batches = 0
+    window_loss = torch.zeros(3, device=device, dtype=torch.float64)
+    for epoch in range(start_epoch, args.epochs):
+        last_epoch = epoch
+        training.set_epoch(epoch)
+        train_sampler.set_epoch(epoch)
+        model.train()
+        for batch_index, batch in enumerate(train_loader):
+            accumulation_start = (
+                batch_index // args.gradient_accumulation_steps
+            ) * args.gradient_accumulation_steps
+            accumulation_size = min(
+                args.gradient_accumulation_steps,
+                len(train_loader) - accumulation_start,
+            )
+            should_step = (
+                (batch_index + 1) % args.gradient_accumulation_steps == 0
+                or batch_index + 1 == len(train_loader)
+            )
+            sync_context = (
+                model.no_sync()
+                if isinstance(model, DDP) and not should_step
+                else torch.enable_grad()
+            )
+            genes, expression, true_embedding, true_hvg, smiles, doses = move_batch(
+                batch, device
+            )
+            with sync_context:
+                with precision(device, amp_dtype):
+                    pred_embedding, pred_hvg = model(genes, expression, smiles, doses)
+                    loss, embedding_loss, expression_loss = compute_loss(
+                        pred_embedding, true_embedding, pred_hvg, true_hvg,
+                        args.hvg_loss_weight,
+                    )
+                scaler.scale(loss / accumulation_size).backward()
+            window_loss += torch.stack(
+                (loss.detach(), embedding_loss.detach(), expression_loss.detach())
+            ).to(dtype=torch.float64)
+            logged_micro_batches += 1
+            if not should_step:
+                continue
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(trainable, 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
+            global_step += 1
+            if global_step % args.log_every_steps == 0:
+                elapsed = time.perf_counter() - log_started
+                steps = global_step - logged_steps
+                metrics = window_loss.clone()
+                if dist.is_initialized():
+                    dist.all_reduce(metrics)
+                if rank == 0:
+                    denominator = logged_micro_batches * world_size
+                    peak_gib = (
+                        torch.cuda.max_memory_allocated(device) / 2**30
+                        if device.type == "cuda" else 0.0
+                    )
+                    print(
+                        f"epoch={epoch + 1}/{args.epochs} step={global_step} "
+                        f"loss={metrics[0].item() / denominator:.6f} "
+                        f"embedding_loss={metrics[1].item() / denominator:.6f} "
+                        f"hvg_loss={metrics[2].item() / denominator:.6f} "
+                        f"steps_per_second={steps / elapsed:.3f} "
+                        f"conditions_per_second="
+                        f"{logged_micro_batches * args.batch_size * world_size / elapsed:.3f} "
+                        f"lr={optimizer.param_groups[0]['lr']:.3e} "
+                        f"peak_memory_gib={peak_gib:.2f}",
+                        flush=True,
+                    )
+                window_loss.zero_()
+                log_started = time.perf_counter()
+                logged_steps = global_step
+                logged_micro_batches = 0
+
+            if global_step >= args.max_steps:
+                break
+
+        if rank == 0:
+            if (epoch + 1) % args.checkpoint_every_epochs == 0:
+                save_checkpoint(
+                    output_dir / "checkpoints" / f"epoch_{epoch + 1:04d}.pt",
+                    model, optimizer, scheduler, scaler, args, epoch, global_step,
+                )
+        if dist.is_initialized():
+            dist.barrier()
+        if global_step >= args.max_steps:
+            break
+
+    if rank == 0:
+        save_checkpoint(
+            output_dir / "last.pt",
+            model,
+            optimizer,
+            scheduler,
+            scaler,
+            args,
+            last_epoch,
+            global_step,
+        )
+        print(
+            f"training complete: reason=max_steps_or_epochs, step={global_step}, "
+            f"checkpoint={output_dir / 'last.pt'}",
+            flush=True,
+        )
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    main()

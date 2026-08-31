@@ -1,0 +1,33 @@
+# Python build and test state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# User-managed data and experiment state
+/storage
+/benchmarks/
+/logs/
+**/checkpoints/
+**/results/
+**/runs/
+**/evaluations/
+
+# Model and array artifacts
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.dat
+*.mmap
+*.npy
+*.npz
+*.parquet
+
+# Local editor and operating-system state
+.DS_Store
+.idea/
+.vscode/
+*.swp

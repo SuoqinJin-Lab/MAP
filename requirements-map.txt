@@ -1,0 +1,11 @@
+# Minimal MAP environment. CUDA-specific torch wheels may be selected by the
+# cluster's package index without changing these compatibility bounds.
+numpy>=1.26,<2.3
+pandas>=2.2,<3.1
+pyarrow>=15,<26
+scipy>=1.11,<1.19
+torch>=2.4,<3
+safetensors>=0.4,<1
+transformers>=4.45,<6
+rdkit>=2023.9,<2027
+scikit-misc>=0.3,<0.6

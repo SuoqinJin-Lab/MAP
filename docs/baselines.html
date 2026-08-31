@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MAP · Baseline Architectures</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body class="architecture-page" data-page="architectures">
+<div class="app-shell">
+  <aside>
+    <a class="side-brand" href="#top"><span>BL</span><strong>Model Architectures</strong></a>
+    <div class="side-caption">BASELINES</div>
+    <nav class="project-tree" aria-label="Baseline architecture navigation">
+      <div class="tree-root">architectures/</div>
+      <a class="tree-item tree-dir current" style="--depth:1" href="#xpert"><i>⌄</i><span>XPert</span></a>
+      <a class="tree-item tree-file" style="--depth:2" href="#xpert"><i>·</i><span>dual Transformer</span></a>
+      <a class="tree-item tree-dir current" style="--depth:1" href="#crisp"><i>⌄</i><span>CRISP</span></a>
+      <a class="tree-item tree-file" style="--depth:2" href="#crisp"><i>·</i><span>PertAE</span></a>
+      <a class="tree-item tree-dir current" style="--depth:1" href="#cmonge"><i>⌄</i><span>CMonge</span></a>
+      <a class="tree-item tree-file" style="--depth:2" href="#cmonge"><i>·</i><span>conditional Monge map</span></a>
+    </nav>
+  </aside>
+
+  <main>
+    <div class="topbar"><a href="#top">Baseline Architectures</a><a class="topbar-link" href="index.html">MAP Experiment Guide</a></div>
+    <div class="overview">
+      <header id="top" class="hero anchor-section">
+        <span class="kicker">MODEL DATA FLOW</span>
+        <h1>XPert、CRISP 与 CMonge</h1>
+      </header>
+
+      <section id="xpert" class="map-section anchor-section" aria-labelledby="xpert-title">
+        <div class="section-intro"><span>XPert</span><h2 id="xpert-title">知识增强的双分支 Transformer</h2></div>
+        <div class="map-scroll" role="region" aria-label="XPert 模型架构图" tabindex="0">
+          <svg id="xpert-diagram" class="map-diagram" viewBox="0 0 1140 830" role="img" aria-labelledby="xpert-diagram-title xpert-diagram-desc">
+            <title id="xpert-diagram-title">XPert 模型架构</title>
+            <desc id="xpert-diagram-desc">XPert 默认使用 official 的逐细胞稀疏全基因表达，在完整基因空间聚合并分箱。控制表达与 PPI 基因向量形成基因 token，药物的 UniMol 原子表示和图表示形成药物 token，随后进入处理分支和控制分支，使用二者差异预测扰动增量并在 HVG 上评估。</desc>
+            <defs>
+              <pattern id="xpert-grid" width="13" height="13" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.4" fill="#dfe7e2"></circle></pattern>
+              <marker id="xpert-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z"></path></marker>
+            </defs>
+            <rect width="1140" height="830" fill="#fbfcfb"></rect>
+            <rect width="1140" height="830" fill="url(#xpert-grid)"></rect>
+
+            <g class="diagram-wires">
+              <path d="M190 72V125" class="arrow"></path>
+              <path d="M190 174V220" class="arrow"></path>
+              <path d="M72 244H122" class="arrow"></path>
+              <path d="M190 269V332" class="arrow"></path>
+
+              <path d="M555 72V118H487V160" class="arrow"></path>
+              <path d="M555 118H650V160" class="arrow"></path>
+              <path d="M487 209V245H570" class="arrow"></path>
+              <path d="M650 209V245H570" class="arrow"></path>
+              <path d="M570 294V332" class="arrow"></path>
+
+              <path d="M950 72V125" class="arrow"></path>
+              <path d="M950 174H1090V710H1012V733" class="arrow"></path>
+
+              <path d="M190 381V414H318" class="arrow"></path>
+              <path d="M570 381V414H318" class="arrow"></path>
+              <path d="M190 381V414H825" class="arrow"></path>
+              <path d="M318 465V520" class="arrow"></path>
+              <path d="M825 465V520" class="arrow"></path>
+
+              <path d="M318 569V612" class="arrow"></path>
+              <path d="M825 569V612" class="arrow"></path>
+              <path d="M393 544H555V602" class="arrow"></path>
+              <path d="M750 544H555V602" class="arrow"></path>
+
+              <path d="M318 661V705" class="arrow"></path>
+              <path d="M825 661V705" class="arrow"></path>
+              <path d="M555 651V705" class="arrow"></path>
+              <path d="M190 174H46V770H555"></path>
+              <path d="M555 754V770"></path>
+              <path d="M555 770V785" class="arrow"></path>
+
+              <path d="M318 754V780H912" class="arrow"></path>
+              <path d="M825 754V780H912" class="arrow"></path>
+              <path d="M618 729H870V750H912" class="arrow"></path>
+            </g>
+
+            <line x1="28" y1="399" x2="1112" y2="399" class="phase-divider"></line>
+            <g class="diagram-phase-label"><text x="42" y="15">INPUT &amp; TOKENS</text><text x="42" y="410">DUAL BRANCH</text></g>
+            <g class="merge-points"><circle cx="555" cy="544" r="7"></circle><circle cx="555" cy="770" r="7"></circle></g>
+
+            <g class="diagram-node node-contract"><rect x="120" y="23" width="140" height="49"></rect><text x="190" y="47.5">Control Cell Set</text></g>
+            <g class="diagram-node node-action"><rect x="119" y="125" width="142" height="49"></rect><text class="diagram-small" x="190" y="149.5">Official: Full-gene Mean</text></g>
+            <g class="diagram-node node-model"><rect x="0" y="220" width="108" height="49"></rect><text class="diagram-small" x="54" y="244.5">Full PPI Gene Vec</text></g>
+            <g class="diagram-node node-action"><rect x="122" y="220" width="136" height="49"></rect><text x="190" y="244.5">128-bin Full Expr</text></g>
+            <g class="diagram-node node-artifact"><rect x="119" y="332" width="142" height="49"></rect><text x="190" y="356.5">Gene Tokens</text></g>
+
+            <g class="diagram-node node-contract"><rect x="496" y="23" width="118" height="49"></rect><text x="555" y="47.5">Drug SMILES</text></g>
+            <g class="diagram-node node-model"><rect x="425" y="160" width="124" height="49"></rect><text x="487" y="184.5">UniMol Atoms</text></g>
+            <g class="diagram-node node-model"><rect x="582" y="160" width="136" height="49"></rect><text x="650" y="184.5">Hypergraph Drug</text></g>
+            <g class="diagram-node node-action"><rect x="495" y="245" width="150" height="49"></rect><text x="570" y="269.5">Token Fusion + Pos</text></g>
+            <g class="diagram-node node-artifact"><rect x="499" y="332" width="142" height="49"></rect><text x="570" y="356.5">Drug Tokens</text></g>
+
+            <g class="diagram-node node-contract"><rect x="878" y="23" width="144" height="49"></rect><text x="950" y="47.5">Condition Cell Set</text></g>
+            <g class="diagram-node node-action"><rect x="879" y="125" width="142" height="49"></rect><text class="diagram-small" x="950" y="149.5">Official: Full-gene Mean</text></g>
+
+            <g class="diagram-node node-model"><rect x="203" y="414" width="230" height="51"></rect><text x="318" y="439.5">Treated: CA → SA → SA → CA</text></g>
+            <g class="diagram-node node-model"><rect x="718" y="414" width="214" height="51"></rect><text x="825" y="439.5">Control: SA → SA → SA → SA</text></g>
+            <g class="diagram-node node-artifact"><rect x="243" y="520" width="150" height="49"></rect><text x="318" y="544.5">Treated Tokens</text></g>
+            <g class="diagram-node node-artifact"><rect x="750" y="520" width="150" height="49"></rect><text x="825" y="544.5">Control Tokens</text></g>
+            <g class="diagram-node node-action"><rect x="482" y="602" width="146" height="49"></rect><text x="555" y="626.5">Token Difference</text></g>
+
+            <g class="diagram-node node-action"><rect x="251" y="612" width="134" height="49"></rect><text x="318" y="636.5">Treated Head</text></g>
+            <g class="diagram-node node-action"><rect x="758" y="612" width="134" height="49"></rect><text x="825" y="636.5">Control Head</text></g>
+            <g class="diagram-node node-action"><rect x="492" y="705" width="126" height="49"></rect><text x="555" y="729.5">Delta Head</text></g>
+
+            <g class="diagram-node node-artifact"><rect x="237" y="705" width="162" height="49"></rect><text x="318" y="729.5">Pred Treated Expr</text></g>
+            <g class="diagram-node node-artifact"><rect x="744" y="705" width="162" height="49"></rect><text x="825" y="729.5">Pred Control Expr</text></g>
+            <g class="diagram-node node-evaluation"><rect x="475" y="785" width="160" height="32"></rect><text x="555" y="801">Pred Condition HVG</text></g>
+            <g class="diagram-node node-loss"><rect x="912" y="733" width="200" height="69"></rect><text class="diagram-small" x="1012" y="753"><tspan x="1012">0.2 Treated + 0.003 Control</tspan><tspan x="1012" dy="17">+ 0.2 Delta + Correlation</tspan><tspan x="1012" dy="17">Weighted Objective</tspan></text></g>
+
+            <g class="internal-text"><text x="101" y="754">Control + Δ</text><text x="555" y="776">HVG gather</text></g>
+          </svg>
+        </div>
+      </section>
+
+      <section id="crisp" class="map-section anchor-section" aria-labelledby="crisp-title">
+        <div class="section-intro"><span>CRISP</span><h2 id="crisp-title">变分基础状态与剂量缩放药物表示</h2></div>
+        <div class="map-scroll" role="region" aria-label="CRISP 模型架构图" tabindex="0">
+          <svg id="crisp-diagram" class="map-diagram" viewBox="0 0 1140 790" role="img" aria-labelledby="crisp-diagram-title crisp-diagram-desc">
+            <title id="crisp-diagram-title">CRISP 模型架构</title>
+            <desc id="crisp-diagram-desc">控制细胞基础模型嵌入被编码为变分基础状态，RDKit2D 药物表示由剂量网络缩放后与基础状态拼接，经解码器预测扰动表达，并以重建、细胞类型、对比、MMD 和 KLD 联合训练。</desc>
+            <defs>
+              <pattern id="crisp-grid" width="13" height="13" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.4" fill="#dfe7e2"></circle></pattern>
+              <marker id="crisp-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z"></path></marker>
+            </defs>
+            <rect width="1140" height="790" fill="#fbfcfb"></rect>
+            <rect width="1140" height="790" fill="url(#crisp-grid)"></rect>
+
+            <g class="diagram-wires">
+              <path d="M178 72V133" class="arrow"></path>
+              <path d="M178 182V245" class="arrow"></path>
+              <path d="M178 294V351H383" class="arrow"></path>
+
+              <path d="M514 72V133" class="arrow"></path>
+              <path d="M514 182V245" class="arrow"></path>
+              <path d="M514 294V326H600V351" class="arrow"></path>
+
+              <path d="M716 72V133" class="arrow"></path>
+              <path d="M585 47H620V157H649" class="arrow"></path>
+              <path d="M716 182V245" class="arrow"></path>
+              <path d="M716 294V326H600V351" class="arrow"></path>
+              <path d="M520 375H464" class="arrow"></path>
+
+              <path d="M383 400V457" class="arrow"></path>
+              <path d="M383 506V565" class="arrow"></path>
+              <path d="M383 614V675" class="arrow"></path>
+              <path d="M383 614V642H785" class="arrow"></path>
+
+              <path d="M458 481H620" class="arrow"></path>
+              <path d="M695 506V642H785" class="arrow"></path>
+              <path d="M895 506V617H820V642" class="arrow"></path>
+
+              <path d="M514 72H900V125" class="arrow dashed"></path>
+              <path d="M178 72H840V125" class="arrow dashed"></path>
+              <path d="M900 174V234" class="arrow"></path>
+              <path d="M900 283V346" class="arrow"></path>
+              <path d="M900 395V432H895V457" class="arrow"></path>
+
+              <path d="M1014 72V642H895" class="arrow"></path>
+              <path d="M1027 549V617H840V642" class="arrow"></path>
+              <path d="M785 691V736" class="arrow"></path>
+            </g>
+
+            <line x1="28" y1="424" x2="1112" y2="424" class="phase-divider"></line>
+            <g class="diagram-phase-label"><text x="42" y="15">LATENTS</text><text x="42" y="451">PREDICTION &amp; OBJECTIVE</text></g>
+            <g class="merge-points"><circle cx="383" cy="351" r="7"></circle><circle cx="785" cy="642" r="7"></circle></g>
+
+            <g class="diagram-node node-contract"><rect x="90" y="23" width="176" height="49"></rect><text x="178" y="47.5">Control FM Set · 2048</text></g>
+            <g class="diagram-node node-model"><rect x="106" y="133" width="144" height="49"></rect><text x="178" y="157.5">FM Encoder MLP</text></g>
+            <g class="diagram-node node-artifact"><rect x="104" y="245" width="148" height="49"></rect><text x="178" y="269.5">μ, log σ² → z basal</text></g>
+
+            <g class="diagram-node node-contract"><rect x="443" y="23" width="142" height="49"></rect><text x="514" y="47.5">Drug RDKit2D</text></g>
+            <g class="diagram-node node-model"><rect x="435" y="133" width="158" height="49"></rect><text x="514" y="157.5">Drug Encoder MLP</text></g>
+            <g class="diagram-node node-artifact"><rect x="442" y="245" width="144" height="49"></rect><text x="514" y="269.5">Drug Latent</text></g>
+
+            <g class="diagram-node node-contract"><rect x="657" y="23" width="118" height="49"></rect><text x="716" y="47.5">Dose</text></g>
+            <g class="diagram-node node-model"><rect x="649" y="133" width="134" height="49"></rect><text x="716" y="157.5">Doser MLP</text></g>
+            <g class="diagram-node node-artifact"><rect x="640" y="245" width="152" height="49"></rect><text x="716" y="269.5">Dose Scale</text></g>
+
+            <g class="diagram-node node-action"><rect x="302" y="351" width="162" height="49"></rect><text x="383" y="375.5">Concatenate Latents</text></g>
+            <g class="diagram-node node-artifact"><rect x="520" y="351" width="160" height="49"></rect><text x="600" y="375.5">Scaled Drug Latent</text></g>
+            <g class="diagram-node node-artifact"><rect x="308" y="457" width="150" height="49"></rect><text x="383" y="481.5">Treated Latent</text></g>
+            <g class="diagram-node node-model"><rect x="314" y="565" width="138" height="49"></rect><text x="383" y="589.5">HVG Decoder</text></g>
+            <g class="diagram-node node-evaluation"><rect x="296" y="675" width="174" height="49"></rect><text x="383" y="699.5">Mean Pred Condition</text></g>
+
+            <g class="diagram-node node-model"><rect x="620" y="457" width="150" height="49"></rect><text x="695" y="481.5">Cell-type Head</text></g>
+
+            <g class="diagram-node node-contract"><rect x="824" y="125" width="152" height="49"></rect><text class="diagram-small" x="900" y="149.5">Negative Control Set</text></g>
+            <g class="diagram-node node-action"><rect x="833" y="234" width="134" height="49"></rect><text x="900" y="258.5">Shared PertAE</text></g>
+            <g class="diagram-node node-artifact"><rect x="816" y="346" width="168" height="49"></rect><text class="diagram-small" x="900" y="370.5">Negative Treated Latent</text></g>
+            <g class="diagram-node node-action"><rect x="820" y="457" width="150" height="49"></rect><text x="895" y="481.5">Cosine Contrast</text></g>
+
+            <g class="diagram-node node-contract"><rect x="945" y="23" width="138" height="49"></rect><text x="1014" y="47.5">Condition HVG</text></g>
+            <g class="diagram-node node-artifact"><rect x="972" y="500" width="110" height="49"></rect><text class="diagram-small" x="1027" y="524.5">DEG Mask = 0</text></g>
+            <g class="diagram-node node-loss"><rect x="675" y="642" width="220" height="49"></rect><text x="785" y="666.5">Joint Training Objective</text></g>
+            <g class="diagram-node node-loss"><rect x="615" y="736" width="340" height="38"></rect><text class="diagram-small" x="785" y="755">0.75 MSE + CE + 0.1 Contrast + 0.1 MMD + KLD</text></g>
+
+            <g class="internal-text"><text x="882" y="105">same drug · different cell type</text><text x="516" y="641">prediction</text><text x="950" y="616">target / mask</text></g>
+          </svg>
+        </div>
+      </section>
+
+      <section id="cmonge" class="map-section anchor-section" aria-labelledby="cmonge-title">
+        <div class="section-intro"><span>CMonge</span><h2 id="cmonge-title">冻结表达自编码器上的条件 Monge 映射</h2></div>
+        <div class="map-scroll" role="region" aria-label="CMonge 模型架构图" tabindex="0">
+          <svg id="cmonge-diagram" class="map-diagram" viewBox="0 0 1140 830" role="img" aria-labelledby="cmonge-diagram-title cmonge-diagram-desc">
+            <title id="cmonge-diagram-title">CMonge 模型架构</title>
+            <desc id="cmonge-diagram-desc">首先联合控制和扰动细胞预训练表达自编码器；随后冻结自编码器，将控制与目标细胞编码到潜空间，以 RDKit2D 和剂量为条件学习残差传输映射，并使用 Sinkhorn 拟合损失与 Monge gap 正则。</desc>
+            <defs>
+              <pattern id="cmonge-grid" width="13" height="13" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.4" fill="#dfe7e2"></circle></pattern>
+              <marker id="cmonge-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L8 4L0 8Z"></path></marker>
+            </defs>
+            <rect width="1140" height="830" fill="#fbfcfb"></rect>
+            <rect width="1140" height="830" fill="url(#cmonge-grid)"></rect>
+
+            <g class="diagram-wires">
+              <path d="M190 72V117H360" class="arrow"></path>
+              <path d="M530 72V117H360" class="arrow"></path>
+              <path d="M360 166V209" class="arrow"></path>
+              <path d="M439 233H550" class="arrow"></path>
+              <path d="M360 258V282" class="arrow dashed"></path>
+
+              <path d="M160 365V417" class="arrow"></path>
+              <path d="M420 365V417" class="arrow"></path>
+              <path d="M720 365V417" class="arrow"></path>
+              <path d="M952 365V417" class="arrow"></path>
+
+              <path d="M160 466V520" class="arrow"></path>
+              <path d="M420 466V520" class="arrow"></path>
+              <path d="M720 466V510H825" class="arrow"></path>
+              <path d="M952 466V510H825" class="arrow"></path>
+
+              <path d="M160 569V602H555" class="arrow"></path>
+              <path d="M825 559V602H555" class="arrow"></path>
+              <path d="M555 651V670"></path>
+              <path d="M160 569V670H555"></path>
+              <path d="M555 670V685" class="arrow"></path>
+              <path d="M488 709H427" class="arrow"></path>
+              <path d="M356 734V770" class="arrow"></path>
+
+              <path d="M420 569V590H765V625" class="arrow"></path>
+              <path d="M622 709H660V649H684" class="arrow"></path>
+              <path d="M160 569V590H976V625" class="arrow"></path>
+              <path d="M622 709H870V649H895" class="arrow"></path>
+              <path d="M765 674V727H872" class="arrow"></path>
+              <path d="M976 674V727H872" class="arrow"></path>
+            </g>
+
+            <line x1="28" y1="307" x2="1112" y2="307" class="phase-divider"></line>
+            <g class="diagram-phase-label"><text x="820" y="36">AE PRETRAINING</text><text x="560" y="336">TRANSPORT</text></g>
+            <g class="merge-points"><circle cx="360" cy="117" r="7"></circle><circle cx="555" cy="625" r="7"></circle><circle cx="555" cy="670" r="7"></circle><circle cx="872" cy="727" r="7"></circle></g>
+
+            <g class="diagram-node node-contract"><rect x="116" y="23" width="148" height="49"></rect><text x="190" y="47.5">Control HVG Set</text></g>
+            <g class="diagram-node node-contract"><rect x="452" y="23" width="156" height="49"></rect><text x="530" y="47.5">Condition HVG Set</text></g>
+            <g class="diagram-node node-action"><rect x="273" y="117" width="174" height="49"></rect><text x="360" y="141.5">Flatten Both Cell Sets</text></g>
+            <g class="diagram-node node-model"><rect x="281" y="209" width="158" height="49"></rect><text x="360" y="233.5">Expression AE</text></g>
+            <g class="diagram-node node-loss"><rect x="550" y="209" width="164" height="49"></rect><text x="632" y="233.5">Reconstruction MSE</text></g>
+            <g class="diagram-node node-artifact"><rect x="287" y="270" width="146" height="32"></rect><text class="diagram-small" x="360" y="286">Freeze Encoder + Decoder</text></g>
+
+            <g class="diagram-node node-contract"><rect x="86" y="316" width="148" height="49"></rect><text x="160" y="340.5">Control HVG Set</text></g>
+            <g class="diagram-node node-contract"><rect x="342" y="316" width="156" height="49"></rect><text x="420" y="340.5">Condition HVG Set</text></g>
+            <g class="diagram-node node-contract"><rect x="649" y="316" width="142" height="49"></rect><text x="720" y="340.5">Drug RDKit2D</text></g>
+            <g class="diagram-node node-contract"><rect x="893" y="316" width="118" height="49"></rect><text x="952" y="340.5">Dose</text></g>
+
+            <g class="diagram-node node-model"><rect x="89" y="417" width="142" height="49"></rect><text x="160" y="441.5">Frozen Encoder</text></g>
+            <g class="diagram-node node-model"><rect x="349" y="417" width="142" height="49"></rect><text x="420" y="441.5">Frozen Encoder</text></g>
+            <g class="diagram-node node-model"><rect x="649" y="417" width="142" height="49"></rect><text x="720" y="441.5">Drug Encoder</text></g>
+            <g class="diagram-node node-model"><rect x="877" y="417" width="150" height="49"></rect><text x="952" y="441.5">log Dose Encoder</text></g>
+
+            <g class="diagram-node node-artifact"><rect x="87" y="520" width="146" height="49"></rect><text x="160" y="544.5">Source Latent z₀</text></g>
+            <g class="diagram-node node-artifact"><rect x="347" y="520" width="146" height="49"></rect><text x="420" y="544.5">Target Latent z₁</text></g>
+            <g class="diagram-node node-artifact"><rect x="744" y="510" width="162" height="49"></rect><text x="825" y="534.5">Context c + Dose</text></g>
+
+            <g class="diagram-node node-model"><rect x="462" y="602" width="186" height="49"></rect><text x="555" y="626.5">Conditional Transport MLP</text></g>
+            <g class="diagram-node node-artifact"><rect x="488" y="685" width="134" height="49"></rect><text x="555" y="709.5">ẑ = z₀ + Δz</text></g>
+            <g class="diagram-node node-model"><rect x="285" y="685" width="142" height="49"></rect><text x="356" y="709.5">Frozen Decoder</text></g>
+            <g class="diagram-node node-evaluation"><rect x="272" y="770" width="168" height="49"></rect><text x="356" y="794.5">Mean Pred Condition</text></g>
+
+            <g class="diagram-node node-loss"><rect x="684" y="625" width="162" height="49"></rect><text x="765" y="649.5">Sinkhorn Fitting</text></g>
+            <g class="diagram-node node-loss"><rect x="895" y="625" width="162" height="49"></rect><text x="976" y="649.5">Monge Gap</text></g>
+            <g class="diagram-node node-loss"><rect x="783" y="727" width="178" height="49"></rect><text x="872" y="751.5">Fitting + λ · Gap</text></g>
+
+            <g class="internal-text"><text x="510" y="586">source latent</text><text x="770" y="594">predicted ↔ target</text><text x="974" y="594">paired cost − OT</text><text x="356" y="760">decode each cell</text></g>
+          </svg>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+</body>
+</html>
