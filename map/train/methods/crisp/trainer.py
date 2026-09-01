@@ -33,12 +33,9 @@ class CRISPDataset(MAPDataset):
 
     def __init__(self, *args, **kwargs) -> None:
         material_dir = Path(kwargs.pop("material_dir"))
-        legacy_use_deg_mask = bool(kwargs.pop("use_deg_mask", False))
         self.deg_mask_mode = str(
-            kwargs.pop("deg_mask_mode", "validation")
+            kwargs.pop("deg_mask_mode", "official")
         ).casefold()
-        if legacy_use_deg_mask:
-            self.deg_mask_mode = "official"
         if self.deg_mask_mode not in {"official", "validation"}:
             raise ValueError("CRISP deg_mask_mode must be official or validation")
         self.use_deg_mask = self.deg_mask_mode == "official"

@@ -142,8 +142,8 @@ def _canonical_source(contract: dict[str, Any], output_dir: Path, shard_size: in
                 smiles = ""
             else:
                 # Preserve the full dose tuple in the condition identity.
-                # Tahoe's legacy schema has one dose column, so encoding pair
-                # doses in the drug key prevents accidental merges.
+                # Encode pair doses in the drug key to prevent accidental
+                # merges while retaining the common scalar dose field.
                 drug = combination
                 if len(component_names) > 1:
                     suffix = ",".join(f"{value:g}" for value in component_doses)
@@ -152,10 +152,9 @@ def _canonical_source(contract: dict[str, Any], output_dir: Path, shard_size: in
                     raise ValueError(
                         f"Missing SMILES for drug components {component_names!r}"
                     )
-                # ``dose`` is the scalar compatibility field consumed by the
-                # Tahoe preparation pipeline.  Set it before constructing the
-                # component-map key so explicit component-dose columns use the
-                # same key during materialization enrichment.
+                # The common preparation contract retains one scalar dose.
+                # Set it before constructing the component-map key so explicit
+                # component-dose columns use the same key during enrichment.
                 dose = component_doses[0]
                 component_map[f"{drug}||{dose:g}"] = {
                     "component_names": component_names,
@@ -252,9 +251,9 @@ def run_stage(
                     values.append(mapping.get(f"{drug}||{float(dose):g}", mapping.get(str(drug), {})).get(field, fallback))
                 conditions[field] = values
             # Include the full component-dose tuple in the logical condition
-            # identity.  The legacy scalar ``dose`` field stores only the
-            # first component dose for compatibility with Tahoe consumers;
-            # using it alone would collide for (A@1,B@2) and (A@1,B@3).
+            # identity.  The scalar dose field stores the first component dose;
+            # the full tuple remains in component_doses_uM so conditions such
+            # as (A@1,B@2) and (A@1,B@3) stay distinct.
             conditions["condition_key"] = [
                 f"{population}|{key}|{','.join(f'{float(value):g}' for value in doses)}"
                 for population, key, doses in zip(

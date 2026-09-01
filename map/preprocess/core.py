@@ -72,8 +72,7 @@ def _ensure_stats(
         paths,
         asset(
             paths,
-            "state/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt",
-            "state/gene_embeddings_esm2.pt",
+            "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt",
         ),
         workers=workers,
         populations=populations,

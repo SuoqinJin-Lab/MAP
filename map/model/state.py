@@ -69,7 +69,7 @@ class FlashTransformerEncoder(nn.Module):
 
 
 class StateEmbeddingModel(nn.Module):
-    """Inference-only SE-600M graph with released checkpoint-compatible names."""
+    """Inference-only SE-600M graph using the released parameter names."""
 
     def __init__(self, *, token_dim: int = 5120, d_model: int = 2048, nlayers: int = 16):
         super().__init__()

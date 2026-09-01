@@ -27,8 +27,6 @@ def _precision(device: torch.device):
         if device.type == "cuda"
         else nullcontext()
     )
-
-
 def _fingerprint(path: Path) -> dict[str, Any]:
     resolved = Path(path).resolve()
     if not resolved.is_file():
@@ -812,45 +810,3 @@ def merge_static_tokens(
         },
         [output],
     )
-
-
-def embed_mapkg(
-    paths: DatasetPaths,
-    esm_embeddings: Path,
-    mapkg_checkpoint: Path,
-    mapkg_vocab: Path,
-    batch_size_genes: int = 512,
-    batch_size_drugs: int = 32,
-    dtype: str = "bfloat16",
-    overwrite: bool = False,
-    dry_run: bool = False,
-) -> StageResult:
-    """Compatibility wrapper for the original single-job static cache API."""
-    embed_genes(
-        paths,
-        esm_embeddings,
-        mapkg_checkpoint,
-        mapkg_vocab,
-        batch_size=batch_size_genes,
-        dtype=dtype,
-        overwrite=overwrite,
-        dry_run=dry_run,
-    )
-    embed_drugs(
-        paths,
-        esm_embeddings,
-        mapkg_checkpoint,
-        mapkg_vocab,
-        batch_size=batch_size_drugs,
-        dtype=dtype,
-        overwrite=overwrite,
-        dry_run=dry_run,
-    )
-    if dry_run:
-        return StageResult(
-            stage="embed_mapkg",
-            status="ok",
-            summary={"dry_run": True, "gene_partitions": 1, "drug_partitions": 1},
-            outputs=[str(paths.prepared / "knowledge_tokens.pt")],
-        )
-    return merge_static_tokens(paths, overwrite=overwrite)

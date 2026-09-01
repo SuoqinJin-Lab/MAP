@@ -160,22 +160,17 @@ class Recorder:
 
 
 def require_frozen_assets(root: Path) -> dict[str, str]:
-    alternatives = {
-        "se600m": ("state/se600m.safetensors", "se600m.safetensors"),
-        "esm2": (
-            "state/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt",
-            "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt",
-        ),
-        "mapkg": ("mapkg/mapkg_encoder_v3.pt", "mapkg_encoder_v3.pt"),
-        "vocab": ("mapkg/bart_vocab.txt", "bart_vocab.txt"),
+    assets = {
+        "se600m": "se600m.safetensors",
+        "esm2": "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt",
+        "mapkg": "mapkg_encoder_v3.pt",
+        "vocab": "bart_vocab.txt",
     }
     resolved = {}
-    for name, candidates in alternatives.items():
-        path = next((root / value for value in candidates if (root / value).is_file()), None)
-        if path is None:
-            raise FileNotFoundError(
-                f"Frozen asset {name!r} is absent from {root}: {', '.join(candidates)}"
-            )
+    for name, filename in assets.items():
+        path = root / filename
+        if not path.is_file():
+            raise FileNotFoundError(f"Frozen asset {name!r} is absent: {path}")
         resolved[name] = str(path.resolve())
     return resolved
 

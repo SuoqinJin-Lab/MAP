@@ -66,13 +66,9 @@ def evaluate_model(
             "evaluation_splits only accepts internal_test/external_test: "
             + ", ".join(unknown_splits)
         )
-    split_aliases = {
-        "internal_test": "val",
-        "external_test": "test",
-    }
     missing_splits = [
         name for name in evaluation_splits
-        if name not in split_payload and split_aliases.get(name, name) not in split_payload
+        if name not in split_payload
     ]
     if missing_splits:
         raise KeyError(f"Split sets absent from {split_path}: {', '.join(missing_splits)}")
@@ -276,9 +272,4 @@ def evaluate_model(
     )
 
 
-def evaluate_map(paths: DatasetPaths, regime: str, checkpoint: Path, *args, **kwargs):
-    """Compatibility wrapper for callers that used the MAP-only evaluator."""
-    return evaluate_model(paths, "map", regime, checkpoint, *args, **kwargs)
-
-
-__all__ = ["evaluate_map", "evaluate_model"]
+__all__ = ["evaluate_model"]

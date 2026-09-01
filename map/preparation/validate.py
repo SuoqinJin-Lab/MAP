@@ -167,7 +167,9 @@ def _validate_split(
     if not _required_file(split_path, files, errors, "split"):
         return None
     payload = _read_json(split_path, errors, "split")
-    rule = payload.get("rule", payload.get("regime"))
+    rule = payload.get("rule")
+    if rule is None:
+        errors.append("split: missing rule")
     if regime is not None and rule != regime:
         errors.append(f"split: rule {rule!r} does not match regime {regime!r}")
     # A split is an immutable project object.  Do not silently accept an
@@ -188,15 +190,13 @@ def _validate_split(
     except ValueError as error:
         errors.append(f"split: invalid split_id {requested_split_id!r} ({error})")
     names = ("train", "internal_test", "external_test")
-    aliases = {"internal_test": "val", "external_test": "test"}
     # ComboSciPlex can intentionally set internal_test_fraction=0 to train on
     # every singleton and evaluate only on the held-out two-drug conditions.
     # Keep train/external_test mandatory while allowing that one empty set.
     allow_empty_internal = float(payload.get("internal_test_fraction", 1.0)) == 0.0
     sets: dict[str, set[int]] = {}
     for name in names:
-        source = name if name in payload else aliases.get(name)
-        values = payload.get(source, []) if source else []
+        values = payload.get(name, [])
         try:
             sets[name] = {int(value) for value in values}
         except (TypeError, ValueError):
@@ -391,10 +391,7 @@ def _validate_method_artifacts(
             representation = "moa"
         if representation not in {"rdkit", "moa"}:
             errors.append(f"cmonge: unknown drug representation {representation!r}")
-        # A project may contain an older RDKit manifest while the requested
-        # unseen-combination run needs the separately materialized MoA table.
-        # Never reuse the manifest's matrix unless its representation agrees
-        # with the run contract.
+        # Select the matrix declared for the requested drug representation.
         manifest_representation = str(manifest.get("drug_representation", "")).casefold()
         if manifest_representation == representation and manifest.get("matrix"):
             filename = manifest["matrix"]
@@ -544,10 +541,8 @@ def validate_method(
             # Static MAPKG tokens are keyed by unique component molecules.
             # A combination condition can contain two components (and the
             # same component appears in many single/doublet conditions), so
-            # comparing this cache against the number of condition rows is
-            # incorrect for ComboSciPlex.  Fall back to canonical_smiles for
-            # legacy single-drug tables and flatten component_smiles when the
-            # combination schema is present.
+            # compare the cache with unique components rather than condition
+            # rows; single-drug tables expose canonical_smiles directly.
             if "component_smiles" in names:
                 table = pq.read_table(conditions_path, columns=["component_smiles"])
                 values = set()

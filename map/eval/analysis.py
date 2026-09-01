@@ -63,9 +63,8 @@ def summarize_evaluations(
         if allowed_regimes is not None and regime not in allowed_regimes:
             continue
         reports = [("primary", payload.get("summary", {}))]
-        # New evaluations persist both granular dose-level and merged
-        # cell-line--drug summaries.  Include both in the analysis index while
-        # retaining the historical primary summary rows for compatibility.
+        # Evaluations persist both granular dose-level and merged
+        # cell-line--drug summaries; include both in the analysis index.
         reports.extend([
             ("dose_level_condition", payload.get("dose_level", {}).get("summary", {})),
             ("cell_line_drug", payload.get("cell_line_drug", {}).get("summary", {})),

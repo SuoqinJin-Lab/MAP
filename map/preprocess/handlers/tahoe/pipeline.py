@@ -231,13 +231,12 @@ def _condition_is_selected(selector: dict | None, key: tuple) -> bool:
 
 
 def _control_is_selected(selector: dict | None, cell_line: str) -> bool:
-    """Apply the control cap while remaining compatible with old filters."""
+    """Apply the control-cell sampling cap for a selected cell line."""
     if selector is None:
         return True
     key = _control_key(cell_line)
-    # Filters written before the control quota was added have no control key.
     if key not in selector["key_to_id"]:
-        return True
+        return False
     return _condition_is_selected(selector, key)
 
 
@@ -521,9 +520,8 @@ def run_filter(args):
         "retained_cells_by_source_part_population": [
             dict(sorted(counter.items())) for counter in retained_by_file_population
         ],
-        # condition_keys is retained as the loader's complete sampling-key
-        # registry; the parquet table still contains perturbation conditions
-        # only.  Older manifests used this name for perturbations alone.
+        # condition_keys is the complete sampling-key registry; the parquet
+        # table contains perturbation conditions only.
         "condition_keys": [_condition_key_text(key) for key in all_filter_keys],
         "perturbation_keys": [_condition_key_text(key) for key in retained_keys],
         "condition_table": paths["table"].name,
@@ -575,7 +573,7 @@ def _scan_stats_chunk(args):
     cell_lines = _WORKER["cell_lines"]
     cell_to_index = _WORKER["cell_to_index"]
     n_genes = _WORKER["n_genes"]
-    sample_plan = _WORKER.get("hvg_sample_plan")
+    sample_plan = _WORKER["hvg_sample_plan"]
     n_batches = len(cell_lines)
 
     sums = np.zeros(n_genes, dtype=np.float64)
@@ -601,7 +599,7 @@ def _scan_stats_chunk(args):
     for file_path in files:
         counts = np.zeros(len(cell_lines), dtype=np.int64)
         population_seen = Counter()
-        file_plan = sample_plan.get(file_path, {}) if sample_plan else {}
+        file_plan = sample_plan.get(file_path, {})
         selector = _file_condition_selector(file_path)
         for table in _iter_selected_batches(file_path, columns, cell_lines=cell_lines):
             for genes, expressions, raw_drug, sample, cell_line, smiles, plate in zip(
@@ -630,11 +628,7 @@ def _scan_stats_chunk(args):
                 population_index = cell_to_index[cell_line]
                 occurrence = int(population_seen[cell_line])
                 population_seen[cell_line] += 1
-                selected_for_hvg = (
-                    occurrence in file_plan.get(cell_line, frozenset())
-                    if sample_plan is not None
-                    else True
-                )
+                selected_for_hvg = occurrence in file_plan.get(cell_line, frozenset())
                 if not selected_for_hvg:
                     counts[population_index] += 1
                     if is_control:
@@ -718,14 +712,15 @@ def _build_hvg_sample_plan(
     *,
     max_cells_per_population: int = 10_000,
     seed: int = 42,
-) -> dict[str, dict[str, frozenset[int]]] | None:
+) -> dict[str, dict[str, frozenset[int]]]:
     """Allocate a deterministic, balanced HVG sample across source shards."""
     filter_manifest = _load_json(output_dir / "condition_filter.json")
     by_part = filter_manifest.get("retained_cells_by_source_part_population")
     if not by_part or len(by_part) != len(files):
-        # A pre-v2 filter has no per-shard quota metadata.  Its complete
-        # selected stream is still valid, just not bounded at 10k per batch.
-        return None
+        raise RuntimeError(
+            "Condition filter is missing per-shard population quotas; rerun "
+            "fetch_cell_line before computing statistics."
+        )
     counts_by_population = {
         population: np.asarray(
             [int(part.get(population, 0)) for part in by_part], dtype=np.int64
@@ -787,9 +782,8 @@ def run_stats(args):
         seed=int(getattr(args, "seed", 42)),
     )
     sample_plan_path = output_dir / "hvg_sample_plan.pkl"
-    if sample_plan is not None:
-        with sample_plan_path.open("wb") as handle:
-            pickle.dump(sample_plan, handle)
+    with sample_plan_path.open("wb") as handle:
+        pickle.dump(sample_plan, handle)
 
     results = _run_parallel(
         files,
@@ -799,7 +793,7 @@ def run_stats(args):
         (
             str(mapping_path), str(sample_map_path), selected_cell_lines,
             str(output_dir),
-            str(sample_plan_path) if sample_plan is not None else None,
+            str(sample_plan_path),
         ),
     )
     n_genes = len(_load_json(output_dir / "state_gene_symbols.json"))
@@ -972,7 +966,7 @@ def _init_hvg_worker(
     sample_map_path,
     cell_lines,
     output_dir,
-    sample_plan_path=None,
+    sample_plan_path,
 ):
     _WORKER["mapping"] = np.load(mapping_path, mmap_mode="r")
     _WORKER["clip"] = np.load(clip_path, mmap_mode="r")
@@ -980,9 +974,8 @@ def _init_hvg_worker(
     with open(sample_map_path, "rb") as handle:
         _WORKER["sample_map"] = pickle.load(handle)
     _WORKER["condition_filter"] = _load_condition_filter(Path(output_dir))
-    if sample_plan_path is not None:
-        with open(sample_plan_path, "rb") as handle:
-            _WORKER["hvg_sample_plan"] = pickle.load(handle)
+    with open(sample_plan_path, "rb") as handle:
+        _WORKER["hvg_sample_plan"] = pickle.load(handle)
 
 
 def _scan_clipped_chunk(task):
@@ -999,11 +992,11 @@ def _scan_clipped_chunk(task):
     clipped_sum = np.zeros(output_shape, dtype=np.float64)
     clipped_sumsq = np.zeros(output_shape, dtype=np.float64)
     clipped_counts = np.zeros(n_batches, dtype=np.int64) if batch_mode else np.asarray(0, dtype=np.int64)
-    sample_plan = _WORKER.get("hvg_sample_plan")
+    sample_plan = _WORKER["hvg_sample_plan"]
     for file_path in files:
         selector = _file_condition_selector(file_path)
         population_seen = Counter()
-        file_plan = sample_plan.get(file_path, {}) if sample_plan else {}
+        file_plan = sample_plan.get(file_path, {})
         columns = [
             "genes", "expressions", "cell_line_id", "drug", "sample", "canonical_smiles"
         ]
@@ -1031,9 +1024,7 @@ def _scan_clipped_chunk(task):
                     continue
                 occurrence = int(population_seen[cell_line])
                 population_seen[cell_line] += 1
-                if sample_plan is not None and occurrence not in file_plan.get(
-                    cell_line, frozenset()
-                ):
+                if occurrence not in file_plan.get(cell_line, frozenset()):
                     continue
                 state_ids, values = _valid_gene_values(genes, expressions, mapping)
                 batch = cell_to_index[cell_line]
@@ -1083,8 +1074,8 @@ def run_hvg(args):
         if not batch_stats_path.is_file():
             raise RuntimeError(
                 "Cell-line-aware HVG selection requires batch_count_stats.npz. "
-                "The project has legacy/global statistics; rerun statistics in "
-                "a new project before selecting HVGs."
+                "Cell-line-aware HVG selection requires batch_count_stats.npz. "
+                "Run data statistics before selecting HVGs."
             )
         clip = _fit_batch_seurat_clips(output_dir, span)
         batch_mode = True
@@ -1110,9 +1101,7 @@ def run_hvg(args):
             str(output_dir / "preparation_state.pkl"),
             selected_cell_lines,
             str(output_dir),
-            str(output_dir / "hvg_sample_plan.pkl")
-            if (output_dir / "hvg_sample_plan.pkl").is_file()
-            else None,
+            str(output_dir / "hvg_sample_plan.pkl"),
         ),
     )
     if batch_mode:
@@ -1177,8 +1166,7 @@ def run_hvg(args):
     np.save(output_dir / "hvg_state_ids.npy", hvg_state_ids)
     np.save(output_dir / "seurat_v3_normalized_variance.npy", normalized_variance)
     # Record the exact HVG contract used for this project. ``population``
-    # fits within-cell-line statistics and then merges one shared gene space;
-    # ``None`` retains an explicit global Seurat-v3 compatibility mode.
+    # fits within-cell-line statistics and then merges one shared gene space.
     stats_manifest_path = output_dir / "stats_manifest.json"
     stats_manifest = _load_json(stats_manifest_path)
     stats_manifest["hvg_batch_key"] = requested_batch_key
@@ -1560,44 +1548,3 @@ def run_materialize(args):
         }
     _dump_json(shapes_path, existing_shapes)
     print(f"materialize complete: artifact={artifact}")
-
-
-def _write_csr(base: Path, prefix: str, group_ids: np.ndarray, rows: np.ndarray):
-    order = np.lexsort((rows, group_ids))
-    sorted_groups = group_ids[order]
-    sorted_rows = rows[order].astype(np.int64, copy=False)
-    unique, starts = np.unique(sorted_groups, return_index=True)
-    offsets = np.concatenate([starts, [len(sorted_rows)]]).astype(np.int64)
-    np.save(base / f"{prefix}_ids.npy", unique)
-    np.save(base / f"{prefix}_offsets.npy", offsets)
-    np.save(base / f"{prefix}_rows.npy", sorted_rows)
-
-
-def run_index(args):
-    output_dir = Path(args.output_dir)
-    shapes = _load_json(output_dir / "materialized_shapes.json")
-    for cell_line in shapes:
-        base = output_dir / cell_line
-        n_cells = int(shapes[cell_line]["n_cells"])
-        conditions = np.memmap(
-            base / "row_condition.int32.dat", dtype=np.int32, mode="r", shape=(n_cells,)
-        )
-        plates = np.memmap(
-            base / "row_group.uint16.dat", dtype=np.uint16, mode="r", shape=(n_cells,)
-        )
-        rows = np.arange(n_cells, dtype=np.int64)
-        perturb = conditions >= 0
-        control = ~perturb
-        control_plate_ids = set(int(value) for value in np.unique(plates[control]))
-        unmatched_plates = sorted(
-            set(int(value) for value in np.unique(plates[perturb])) - control_plate_ids
-        )
-        if unmatched_plates:
-            raise RuntimeError(
-                f"{cell_line} has perturbation cells on plates without DMSO controls: "
-                f"{unmatched_plates}"
-            )
-        _write_csr(base, "condition", np.asarray(conditions[perturb]), rows[perturb])
-        _write_csr(base, "control_plate", np.asarray(plates[control]), rows[control])
-
-    print("condition/control index complete")

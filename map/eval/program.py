@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
         default="cell_line_drug",
         help=(
             "Primary paper protocol evaluates each cell-line/drug/dose "
-            "condition; cell_line_drug is retained for legacy summaries"
+            "condition; cell_line_drug additionally reports dose-collapsed results"
         ),
     )
     parser.add_argument("--num-gene-tokens", type=int, default=2048)
@@ -232,7 +232,7 @@ def _select_deg_ids(mask, true_delta, top_k: int) -> np.ndarray:
 
 
 def _aggregate_cell_line_drug(records, prediction_rows, dataset, args, seed, mask_fn, condition_metrics_fn):
-    """Collapse dose-level rows to the legacy cell-line–drug evaluation unit."""
+    """Collapse dose-level rows to the cell-line–drug evaluation unit."""
     grouped = defaultdict(list)
     grouped_rows = defaultdict(list)
     for record, row in zip(records, prediction_rows):
@@ -480,9 +480,7 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
                 seed, components["deg_mask"],
             )
         else:
-            # Optional legacy cell-line/drug analysis pools all doses before
-            # DEG discovery, matching the historical evaluator only when the
-            # caller explicitly requests it.
+            # Cell-line/drug analysis pools all doses before DEG discovery.
             deg_mask, true_delta = _group_degs(
                 dataset, condition_ids, args.deg_fdr, args.deg_max_cells,
                 seed, components["deg_mask"],

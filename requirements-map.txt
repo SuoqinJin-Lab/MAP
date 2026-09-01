@@ -1,5 +1,5 @@
 # Minimal MAP environment. CUDA-specific torch wheels may be selected by the
-# cluster's package index without changing these compatibility bounds.
+# cluster's package index without changing these version bounds.
 numpy>=1.26,<2.3
 pandas>=2.2,<3.1
 pyarrow>=15,<26

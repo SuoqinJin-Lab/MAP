@@ -102,22 +102,10 @@ class MAPDataset(Dataset):
         self.split_id = self.split_manifest.get("split_id", split_path.stem)
         table = pq.read_table(self.data_dir / "conditions.parquet")
         conditions = table.to_pandas().set_index("condition_id")
-        # Paper Tahoe calls the grouping column ``cell_line``; the generic
-        # contract calls it ``population``.  Normalize this metadata in
-        # memory (the parquet artifact remains untouched).
+        # Tahoe and simple single-drug handlers write ``population`` directly;
+        # combination handlers add component columns below.
         if "population" not in conditions.columns:
-            if "cell_line" not in conditions.columns:
-                raise ValueError(
-                    "conditions.parquet must contain population or cell_line"
-                )
-            conditions["population"] = conditions["cell_line"].astype(str)
-        if (
-            "population_name" not in conditions.columns
-            and "cell_line_name" in conditions.columns
-        ):
-            conditions["population_name"] = conditions["cell_line_name"]
-        # Normalize the optional combination schema in memory.  Legacy
-        # condition tables remain valid and become singleton components.
+            raise ValueError("conditions.parquet must contain population")
         component_smiles = []
         component_doses = []
         component_names = []
@@ -254,44 +242,36 @@ class MAPDataset(Dataset):
         token_length = int(shape.get("token_length", 2048))
         hvg_dim = int(shape.get("hvg_dim", 2000))
 
-        def existing(*names: str) -> Path:
-            for name in names:
-                path = base / name
-                if path.is_file():
-                    return path
-            # Let ``np.memmap``/``np.load`` raise their usual precise error if
-            # a required artifact is genuinely absent.  Returning the primary
-            # name also keeps lightweight reader probes (which monkeypatch
-            # those functions) independent of on-disk fixture files.
-            return base / names[0]
+        def required(name: str) -> Path:
+            path = base / name
+            if not path.is_file():
+                raise FileNotFoundError(f"Required materialized file is missing: {path}")
+            return path
 
-        # Current artifacts use generic ``row_group``/``control_group`` names;
-        # the paper materializer uses plate-specific names.  They represent the
-        # same matching relation, so expose both through one internal schema.
-        row_group_path = existing("row_group.uint16.dat", "row_plate.uint16.dat")
-        row_condition_path = existing("row_condition.int32.dat")
+        row_group_path = required("row_group.uint16.dat")
+        row_condition_path = required("row_condition.int32.dat")
         arrays = {
             "row_group": np.memmap(row_group_path, dtype=np.uint16, mode="r", shape=(n_cells,)),
             "row_condition": np.memmap(row_condition_path, dtype=np.int32, mode="r", shape=(n_cells,)),
         }
         if self.fields & {"control_gene_ids", "condition_gene_ids"}:
             arrays["genes"] = np.memmap(
-                existing("se_gene_ids.uint16.dat"), dtype=np.uint16, mode="r",
+                required("se_gene_ids.uint16.dat"), dtype=np.uint16, mode="r",
                 shape=(n_cells, token_length),
             )
         if self.fields & {"control_expressions", "condition_expressions"}:
             arrays["expression"] = np.memmap(
-                existing("se_expr.float16.dat"), dtype=np.float16, mode="r",
+                required("se_expr.float16.dat"), dtype=np.float16, mode="r",
                 shape=(n_cells, token_length),
             )
         if self.fields & {"condition_hvg_vectors", "control_hvg_vectors"}:
             arrays["hvg"] = np.memmap(
-                existing("hvg.float16.dat"), dtype=np.float16, mode="r",
+                required("hvg.float16.dat"), dtype=np.float16, mode="r",
                 shape=(n_cells, hvg_dim),
             )
         if self.fields & {"control_embeddings", "condition_embeddings"}:
             arrays["embedding"] = np.memmap(
-                existing("state_embeddings.float16.dat"), dtype=np.float16,
+                required("state_embeddings.float16.dat"), dtype=np.float16,
                 mode="r", shape=(n_cells, 2048),
             )
         group_files = {
@@ -301,73 +281,21 @@ class MAPDataset(Dataset):
                 "condition_rows.npy",
             ),
             "control_group": (
-                ("control_group_ids.npy", "control_plate_ids.npy"),
-                ("control_group_offsets.npy", "control_plate_offsets.npy"),
-                ("control_group_rows.npy", "control_plate_rows.npy"),
+                "control_group_ids.npy",
+                "control_group_offsets.npy",
+                "control_group_rows.npy",
             ),
         }
         for prefix, names in group_files.items():
-            id_names, offset_names, row_names = names
-            if isinstance(id_names, str):
-                id_names, offset_names, row_names = (
-                    (id_names,),
-                    (offset_names,),
-                    (row_names,),
-                )
-            arrays[f"{prefix}_ids"] = np.load(existing(*id_names))
-            if prefix == "condition":
-                raw_condition_ids = np.asarray(arrays[f"{prefix}_ids"], dtype=np.int64)
-                normalized, local_map = self._normalize_population_condition_ids(
-                    population, raw_condition_ids
-                )
-                arrays[f"{prefix}_ids"] = normalized
-                if local_map is not None:
-                    raw_rows = np.asarray(arrays["row_condition"], dtype=np.int64)
-                    translated = raw_rows.copy()
-                    valid = (raw_rows >= 0) & (raw_rows < len(local_map))
-                    translated[valid] = local_map[raw_rows[valid]]
-                    arrays["row_condition"] = translated.astype(np.int32, copy=False)
-            arrays[f"{prefix}_offsets"] = np.load(existing(*offset_names))
-            arrays[f"{prefix}_rows"] = np.load(existing(*row_names), mmap_mode="r")
+            id_name, offset_name, row_name = names
+            arrays[f"{prefix}_ids"] = np.load(required(id_name))
+            arrays[f"{prefix}_offsets"] = np.load(required(offset_name))
+            arrays[f"{prefix}_rows"] = np.load(required(row_name), mmap_mode="r")
             arrays[f"{prefix}_lookup"] = {
                 int(value): index for index, value in enumerate(arrays[f"{prefix}_ids"])
             }
         self._arrays[population] = arrays
         return arrays
-
-    def _normalize_population_condition_ids(self, population: str, values):
-        """Return global condition ids for either MAP or paper population files.
-
-        The generic materializer stores global ids.  Early paper artifacts used
-        population-local ids in some files, so detect that layout from the
-        condition metadata and translate only when necessary.  This keeps the
-        reader compatible with both layouts without rewriting multi-gigabyte
-        row arrays on disk.
-        """
-        ids = np.asarray(values, dtype=np.int64)
-        # A few lightweight consumers construct the dataset object without
-        # loading condition metadata (for example resource probes).  In that
-        # mode there is no reliable population mapping, so preserve the ids
-        # exactly as stored instead of dereferencing an absent attribute.
-        if not hasattr(self, "conditions"):
-            return ids, None
-        expected = np.asarray(
-            self.conditions.index[
-                self.conditions["population"].astype(str) == str(population)
-            ],
-            dtype=np.int64,
-        )
-        if len(expected) == 0 or len(ids) == 0:
-            return ids, None
-        valid_global = np.isin(ids, expected).mean()
-        if valid_global >= 0.95:
-            return ids, None
-        # Local ids are positional within this population's sorted condition
-        # table.  Preserve unknown/sentinel values (e.g. -1) for diagnostics.
-        local = ids.copy()
-        in_range = (local >= 0) & (local < len(expected))
-        local[in_range] = expected[local[in_range]]
-        return local, expected
 
     @staticmethod
     def _group_rows(arrays: dict, prefix: str, group_id: int):

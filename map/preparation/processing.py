@@ -92,7 +92,7 @@ def _holdout_count(value: int | float, total: int, label: str) -> int:
 
 
 def _load_condition_rows(paths: DatasetPaths, conditions):
-    """Load the materialized condition CSR index when available."""
+    """Load the current materialized condition CSR index."""
     shapes_path = paths.prepared / "materialized_shapes.json"
     if not shapes_path.is_file():
         return None
@@ -110,50 +110,23 @@ def _load_condition_rows(paths: DatasetPaths, conditions):
                     np.asarray(rows[int(offsets[index]): int(offsets[index + 1])], dtype=np.int64),
                 )
         if not rows_by_condition:
-            return None
+            raise RuntimeError("Condition row index is empty; rebuild the sampling index")
         expected = set(int(value) for value in conditions["condition_id"])
         if not expected.issubset(rows_by_condition):
-            return None
+            missing = sorted(expected - set(rows_by_condition))
+            raise RuntimeError(f"Condition row index is missing ids: {missing[:8]}")
         return rows_by_condition
-    except (FileNotFoundError, ValueError, OSError):
-        # Keep the condition-only format usable for hand-authored fixtures and
-        # materialized data produced by older releases.
-        return None
+    except (FileNotFoundError, ValueError, OSError) as error:
+        raise RuntimeError("Condition row index is incomplete; rebuild the sampling index") from error
 
 
-def _assign_internal_rows(condition_rows, seed: int, train_fraction: float = 0.8):
-    train_rows = {}
-    internal_test_rows = {}
-    train_ids = []
-    internal_test_ids = []
-    for condition_id, (population, rows) in condition_rows.items():
-        rows = np.asarray(rows, dtype=np.int64)
-        rng = np.random.default_rng(np.random.SeedSequence([int(seed), int(condition_id), 7103]))
-        shuffled = rows[rng.permutation(len(rows))]
-        n_train = int(len(shuffled) * float(train_fraction))
-        train_rows.setdefault(population, []).extend(int(value) for value in shuffled[:n_train])
-        internal_test_rows.setdefault(population, []).extend(
-            int(value) for value in shuffled[n_train:]
-        )
-        if n_train:
-            train_ids.append(int(condition_id))
-        if n_train < len(shuffled):
-            internal_test_ids.append(int(condition_id))
-    for values in train_rows.values():
-        values.sort()
-    for values in internal_test_rows.values():
-        values.sort()
-    return train_rows, internal_test_rows, train_ids, internal_test_ids
-
-
-def _legacy_pair_groups(conditions, condition_rows):
+def _pair_groups(conditions, condition_rows):
     groups = {}
     for row in conditions.itertuples(index=False):
         condition_id = int(row.condition_id)
         population, rows = condition_rows[condition_id]
-        # MAP-validation samples each (cell-line, drug, concentration) combo
-        # independently (max 5000 cells), then sequential evaluation merges
-        # concentrations back to one cell-line–drug entity.
+        # Sample each population/drug/dose combination independently (max
+        # 5000 cells); evaluation merges doses into one population/drug unit.
         key = (str(population), str(row.drug), float(row.dose))
         entry = groups.setdefault(key, {
             "population": str(population), "drug": str(row.drug),
@@ -167,7 +140,7 @@ def _legacy_pair_groups(conditions, condition_rows):
     return groups
 
 
-def _legacy_group_split(groups, external_keys, seed, internal_fraction):
+def _group_split(groups, external_keys, seed, internal_fraction):
     train_rows, internal_rows, external_rows = {}, {}, {}
     train_ids, internal_ids, external_ids = [], [], []
     rng = np.random.default_rng(int(seed))
@@ -240,8 +213,8 @@ def _row_level_unprofiled_split(
         external_test_drugs = sorted(
             rng.choice(np.asarray(drugs), size=n_external, replace=False).tolist()
         )
-    groups = _legacy_pair_groups(conditions, condition_rows)
-    sampled = _legacy_group_split(
+    groups = _pair_groups(conditions, condition_rows)
+    sampled = _group_split(
         groups,
         {key for key, entry in groups.items() if entry["drug"] in set(external_test_drugs)},
         seed,
@@ -256,7 +229,7 @@ def _row_level_unprofiled_split(
         "seed": int(seed),
         "external_test_size_requested": external_test_size,
         "internal_test_fraction": internal_fraction,
-        "split_mode": "legacy_cell_line_drug_sampled_rows",
+        "split_mode": "population_drug_sampled_rows",
         "train_fraction": 1.0 - internal_fraction,
         "external_test_drugs": external_test_drugs,
         "requested_external_drugs": requested,
@@ -287,10 +260,8 @@ def _row_level_combination_split(
     rng = np.random.default_rng(seed)
     allocation_order = tuple(sorted(populations, key=lambda value: len(drugs_by_population[value])))
     for population in allocation_order:
-        # Legacy allocation walks cell lines from fewest to most drugs and
-        # removes already allocated drugs globally.  It does not require the
-        # held-out drug to occur in another cell line; that detail matters for
-        # reproducing the old unseen-combination panel.
+        # Allocate populations from fewest to most drugs, optionally keeping
+        # held-out drugs disjoint across populations.
         candidates = sorted(
             drug for drug in drugs_by_population[population]
             if (not disjoint or drug not in used)
@@ -310,14 +281,14 @@ def _row_level_combination_split(
         external_by_population[population] = selected
         if disjoint:
             used.update(selected)
-    groups = _legacy_pair_groups(conditions, condition_rows)
+    groups = _pair_groups(conditions, condition_rows)
     external_keys = {
         key
         for key, entry in groups.items()
         if entry["population"] in external_by_population
         and entry["drug"] in set(external_by_population[entry["population"]])
     }
-    sampled = _legacy_group_split(groups, external_keys, seed, internal_fraction)
+    sampled = _group_split(groups, external_keys, seed, internal_fraction)
     return {
         "train": sampled["train"],
         "internal_test": sampled["internal_test"],
@@ -325,7 +296,7 @@ def _row_level_combination_split(
         "regime": "unseen_combination", "rule": "unseen_combination", "seed": int(seed),
         "external_test_size_requested": external_test_size,
         "internal_test_fraction": internal_fraction,
-        "split_mode": "legacy_cell_line_drug_sampled_rows",
+        "split_mode": "population_drug_sampled_rows",
         "train_fraction": 1.0 - internal_fraction,
         "external_test_drugs_by_population": external_by_population,
         "external_test_drugs_are_disjoint_across_populations": bool(disjoint),
@@ -572,8 +543,7 @@ def generate_splits(
             required = {"train", "internal_test", "external_test"}
             if not required.issubset(payload):
                 raise ValueError(
-                    f"Existing {regime} split uses the legacy val/test contract; "
-                    "choose a new output name or pass overwrite=True"
+                    f"Existing {regime} split is missing required sets: {sorted(required - set(payload))}"
                 )
     else:
         payloads = {}

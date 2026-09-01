@@ -39,11 +39,6 @@ class DatasetPaths:
     def contract(self) -> Path:
         return contract_path(self.workspace)
 
-    @property
-    def frozen(self) -> Path:
-        """Compatibility alias for read-only pretrained assets."""
-        return self.frozen_models
-
     def _name(self, value: str, label: str) -> str:
         value = str(value).casefold() if label == "method" else str(value)
         if not value or value in {".", ".."} or Path(value).name != value:

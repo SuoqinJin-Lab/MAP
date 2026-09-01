@@ -876,7 +876,7 @@ def _prepare_graph_assets(
         payload = json.loads(manifest_file.read_text(encoding="utf-8"))
         if payload.get("format") not in {"graph_bundle_v1", "map_xpert_assets_v4"}:
             raise RuntimeError(
-                "Existing graph inputs use a legacy STATE-expression contract; "
+                "Existing graph inputs do not match the current graph contract; "
                 "rerun graph preparation with overwrite=True"
             )
         if payload.get("hvg_fingerprint") != hvg_fingerprint:

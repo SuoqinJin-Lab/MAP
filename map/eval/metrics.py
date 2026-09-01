@@ -170,11 +170,7 @@ def condition_metrics(
     indices=None,
     true_deg_mask=None,
     deg_top_k=50,
-    deg_candidates=None,
 ):
-    # ``deg_candidates`` is retained for API compatibility with pre-1.0
-    # callers.  Paper scoring always ranks predictions over the complete HVG
-    # vector, so the value is intentionally ignored when a DEG mask is given.
     predicted = np.asarray(predicted, dtype=np.float64)
     observed = np.asarray(observed, dtype=np.float64)
     control = np.asarray(control, dtype=np.float64)

@@ -37,8 +37,8 @@ def load_hvg_contract(prepared: str | Path) -> dict[str, Any]:
     fingerprint = payload.get("fingerprint")
     if not fingerprint:
         raise RuntimeError(
-            "HVG contract has no fingerprint (legacy preprocessing). "
-            "Regenerate HVGs and all HVG-dependent material for this project."
+            "HVG contract has no fingerprint. Regenerate HVGs and all "
+            "HVG-dependent material for this project."
         )
     expected = hvg_fingerprint(payload)
     if fingerprint != expected:

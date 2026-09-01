@@ -69,10 +69,6 @@ def _write_artifact_manifest(
         "smiles": list(smiles),
         "consumers": list(payload.get("consumers", ())),
     })
-    # Artifact manifests are intentionally owner-neutral.  Older caches may
-    # still carry a model/directory marker; drop those markers when refreshed.
-    payload.pop("model", None)
-    payload.pop("directory", None)
     manifest_file = root / "manifest.json"
     manifest_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return manifest_file
@@ -173,7 +169,7 @@ def _deg_masks(
             "condition_ids": source / "condition_ids.npy",
             "condition_offsets": source / "condition_offsets.npy",
             "condition_rows": source / "condition_rows.npy",
-            "control_rows": source / ("control_group_rows.npy" if (source / "control_group_rows.npy").is_file() else "control_plate_rows.npy"),
+            "control_rows": source / "control_group_rows.npy",
             "hvg": source / "hvg.float16.dat",
         }
         required_files = required.values() if mask_mode == "official" else (
@@ -183,10 +179,9 @@ def _deg_masks(
         )
         missing = [str(path) for path in required_files if not path.is_file()]
         if missing:
-            # DEG autofocus is optional.  Keep legacy/compact preparations
-            # usable for the other CRISP inputs; enabling the mask later will
-            # fail with a targeted message in CRISPDataset.
-            continue
+            raise FileNotFoundError(
+                "CRISP DEG mask preparation requires: " + ", ".join(missing)
+            )
         control_rows = (
             np.asarray(np.load(required["control_rows"]), dtype=np.int64)
             if mask_mode == "official"
@@ -376,9 +371,9 @@ def _control_group_means(
         hvg_dim = int(shape["hvg_dim"])
         source = paths.prepared / str(population)
         required = {
-            "group_ids": source / ("control_group_ids.npy" if (source / "control_group_ids.npy").is_file() else "control_plate_ids.npy"),
-            "offsets": source / ("control_group_offsets.npy" if (source / "control_group_offsets.npy").is_file() else "control_plate_offsets.npy"),
-            "rows": source / ("control_group_rows.npy" if (source / "control_group_rows.npy").is_file() else "control_plate_rows.npy"),
+            "group_ids": source / "control_group_ids.npy",
+            "offsets": source / "control_group_offsets.npy",
+            "rows": source / "control_group_rows.npy",
             "embeddings": source / "state_embeddings.float16.dat",
             "hvg": source / "hvg.float16.dat",
         }
@@ -608,9 +603,22 @@ def prepare_moa_features(
     """Prepare the split-dependent MoA drug representation."""
     _, hvg_fingerprint = _hvg_identity(paths)
     smiles = _smiles(paths)
-    from ..train.splits import resolve_split
-
-    split_path, split = resolve_split(paths, "unseen_combination", split_file)
+    # MoA is split-dependent for unseen-combination and ComboSciPlex
+    # (single-drug training, combination evaluation) experiments.
+    if split_file is None:
+        raise ValueError("split_file is required for split-dependent MoA features")
+    split_path = Path(split_file)
+    if not split_path.is_absolute():
+        candidates = (paths.workspace / split_path, paths.splits / split_path)
+        split_path = next((candidate for candidate in candidates if candidate.is_file()), candidates[-1])
+    if not split_path.is_file():
+        raise FileNotFoundError(split_path)
+    split = json.loads(split_path.read_text(encoding="utf-8"))
+    if split.get("rule") not in {"unseen_combination", "combosciplex"}:
+        raise ValueError("MoA features require an unseen_combination or combosciplex split")
+    split_id = str(split.get("split_id", split_path.parent.name))
+    if split_path.resolve() != paths.split_file(split_id).resolve():
+        raise ValueError(f"Split must be stored as splits/{split_id}/split.json, got {split_path}")
     directory = paths.split_material_dir(split["split_id"], "drug_moa")
     target = directory / "moa.float32.npy"
     metadata = directory / "moa_manifest.json"

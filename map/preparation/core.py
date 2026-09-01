@@ -55,9 +55,9 @@ def create_split(
 def prepare_gene_tokens(paths: DatasetPaths, **kwargs):
     return _embed_genes(
         paths,
-        asset(paths, "state/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt", "state/gene_embeddings_esm2.pt"),
-        asset(paths, "mapkg/mapkg_encoder_v3.pt", "mapkg/mapkg_encoder.pt", "mapkg/mapkg_model.pt"),
-        asset(paths, "mapkg/bart_vocab.txt"),
+        asset(paths, "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt"),
+        asset(paths, "mapkg_encoder_v3.pt"),
+        asset(paths, "bart_vocab.txt"),
         **kwargs,
     )
 
@@ -65,9 +65,9 @@ def prepare_gene_tokens(paths: DatasetPaths, **kwargs):
 def prepare_knowledge_drug_tokens(paths: DatasetPaths, **kwargs):
     return _embed_drugs(
         paths,
-        asset(paths, "state/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt", "state/gene_embeddings_esm2.pt"),
-        asset(paths, "mapkg/mapkg_encoder_v3.pt", "mapkg/mapkg_encoder.pt", "mapkg/mapkg_model.pt"),
-        asset(paths, "mapkg/bart_vocab.txt"),
+        asset(paths, "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt"),
+        asset(paths, "mapkg_encoder_v3.pt"),
+        asset(paths, "bart_vocab.txt"),
         **kwargs,
     )
 
@@ -79,8 +79,8 @@ def assemble_knowledge_tokens(paths: DatasetPaths, **kwargs):
 def prepare_condition_embeddings(paths: DatasetPaths, *, populations=None, **kwargs):
     return _embed_state(
         paths,
-        asset(paths, "state/se600m.safetensors"),
-        asset(paths, "state/Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt", "state/gene_embeddings_esm2.pt"),
+        asset(paths, "se600m.safetensors"),
+        asset(paths, "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt"),
         populations=tuple(populations or _populations(paths)),
         **kwargs,
     )
