@@ -83,8 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     hvg.add_argument("--n-top-genes", type=int, default=2_000)
     hvg.add_argument("--workers", type=int, default=8)
     hvg.add_argument(
-        "--batch-key", choices=("none", "population"), default="none",
-        help="Optional Seurat-v3 batch correction key; paper protocol uses none",
+        "--batch-key", choices=("none", "population"), default="population",
+        help=("HVG protocol: population fits within-cell-line statistics and "
+              "merges one shared gene set (default); none fits globally"),
     )
 
     preparation_stage = stages.add_parser("preparation")

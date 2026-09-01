@@ -31,8 +31,10 @@ def compute_stats(
         paths, "stats", workers=workers, esm_embeddings=esm_embeddings,
     )
     outputs = [paths.prepared / name for name in (
-        "stats_manifest.json", "global_count_stats.npz", "condition_group_census.json",
-        "source_gene_to_state.npy", "state_gene_symbols.json", "unmapped_state_gene_symbols.json",
+        "stats_manifest.json", "global_count_stats.npz", "batch_count_stats.npz",
+        "condition_group_census.json", "eligible_file_cell_counts.npy",
+        "preparation_state.pkl", "hvg_sample_plan.pkl", "source_gene_to_state.npy",
+        "state_gene_symbols.json", "unmapped_state_gene_symbols.json",
     )]
     manifest = json.loads((paths.prepared / "stats_manifest.json").read_text(encoding="utf-8"))
     eligible = manifest.get("eligible_cells_by_population", {})
@@ -52,20 +54,26 @@ def fit_hvg(
     paths: DatasetPaths,
     workers: int = 8,
     n_top_genes: int = 2000,
-    batch_key: str | None = None,
+    batch_key: str | None = "population",
 ) -> StageResult:
     run_handler_stage(
         paths, "hvg", workers=workers, n_top_genes=n_top_genes,
         seurat_span=0.3, hvg_batch_key=batch_key,
     )
-    outputs = [paths.prepared / name for name in (
-        "hvg.json", "hvg_state_ids.npy", "seurat_v3_model.npz", "seurat_clip_values.npy",
-    )]
     hvg = json.loads((paths.prepared / "hvg.json").read_text(encoding="utf-8"))
+    model_name = (
+        "seurat_v3_batch_model.npz" if hvg.get("batch_key") == "population"
+        else "seurat_v3_model.npz"
+    )
+    outputs = [paths.prepared / name for name in (
+        "hvg.json", "hvg_state_ids.npy", model_name, "seurat_clip_values.npy",
+    )]
     return _result(paths, "hvg", {
         "method": hvg.get("flavor", "seurat_v3"),
         "n_hvg": int(hvg.get("n_top_genes", len(hvg.get("state_ids", [])))),
         "batch_key": hvg.get("batch_key"),
+        "protocol": hvg.get("protocol"),
+        "fingerprint": hvg.get("fingerprint"),
     }, outputs)
 
 

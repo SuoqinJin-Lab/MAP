@@ -72,6 +72,7 @@ def preparation_identifier(
     target_sum: float,
     log1p: bool,
     condition_filter_id: str | None = None,
+    hvg_fingerprint: str | None = None,
 ) -> str:
     payload = {
         "populations": list(populations),
@@ -80,6 +81,7 @@ def preparation_identifier(
         "target_sum": float(target_sum),
         "log1p": bool(log1p),
         "condition_filter_id": condition_filter_id,
+        "hvg_fingerprint": hvg_fingerprint,
     }
     return compact_identifier(
         [
@@ -89,6 +91,7 @@ def preparation_identifier(
             f"sum-{number_token(target_sum)}",
             "log1p" if log1p else "nolog1p",
             f"filter-{condition_filter_id}" if condition_filter_id else "",
+            f"hvg-{str(hvg_fingerprint)[:8]}" if hvg_fingerprint else "",
             f"cfg-{config_digest(payload, 8)}",
         ],
         payload,

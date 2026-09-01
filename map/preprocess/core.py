@@ -29,7 +29,8 @@ def _populations(paths: DatasetPaths) -> tuple[str, ...]:
 
 
 def _ensure_stats(
-    paths: DatasetPaths | DataSelection, *, workers: int = 8, populations=None
+    paths: DatasetPaths | DataSelection, *, workers: int = 8, populations=None,
+    hvg_batch_key: str | None = "population",
 ):
     if populations is None and isinstance(paths, DataSelection):
         populations = paths.populations
@@ -48,6 +49,8 @@ def _ensure_stats(
         paths.prepared / "source_gene_to_state.npy",
         paths.prepared / "state_gene_symbols.json",
     )
+    if hvg_batch_key == "population":
+        required = (*required, paths.prepared / "batch_count_stats.npz")
     if all(path.is_file() for path in required):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         existing = tuple(str(value) for value in manifest.get("populations", ()))
@@ -161,11 +164,25 @@ def select_hvg(
     *,
     n_top_genes: int = 2_000,
     workers: int = 8,
-    batch_key: str | None = None,
+    batch_key: str | None = "population",
 ):
     selected = paths
     paths = _as_paths(selected)
-    _ensure_stats(selected, workers=workers)
+    if (paths.prepared / "hvg.json").is_file():
+        raise FileExistsError(
+            "This project already has an HVG contract; create a new project to "
+            "select a different HVG protocol or gene order."
+        )
+    if any(
+        (paths.prepared / name).is_file()
+        for name in ("materialization_manifest.json", "materialized_shapes.json")
+    ):
+        raise FileExistsError(
+            "This project already has materialized outputs. HVG gene order is "
+            "immutable once materialization starts; create a new project to "
+            "change the HVG protocol."
+        )
+    _ensure_stats(selected, workers=workers, hvg_batch_key=batch_key)
     return _fit_hvg(
         paths, workers=workers, n_top_genes=n_top_genes, batch_key=batch_key
     )

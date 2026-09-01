@@ -24,6 +24,8 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import torch
 
+from ...._common.hvg import hvg_fingerprint
+
 
 CELL_LINES = (
     "CVCL_0131",  # A-172
@@ -865,7 +867,10 @@ def run_stats(args):
             "pad_length": N_GENE_TOKENS + 1,
             "num_hvg": N_HVG,
             "hvg_flavor": "seurat_v3",
-            "hvg_batch_key": None,
+            # Statistics are collected per population so the default HVG
+            # protocol can reproduce the cell-line-aware shared gene space.
+            # An explicit global selection updates this field in run_hvg().
+            "hvg_batch_key": "population",
             "condition_filter": _load_json(output_dir / "condition_filter.json"),
         },
     )
@@ -1065,18 +1070,22 @@ def run_hvg(args):
     span = float(getattr(args, "seurat_span", SEURAT_SPAN))
     if n_hvg <= 0:
         raise ValueError("n_top_genes must be positive")
-    requested_batch_key = getattr(args, "hvg_batch_key", None)
+    requested_batch_key = getattr(args, "hvg_batch_key", "population")
     if requested_batch_key in (None, "", "none", "None"):
         requested_batch_key = None
     elif requested_batch_key != "population":
         raise ValueError("hvg_batch_key must be None or 'population'")
     batch_stats_path = output_dir / "batch_count_stats.npz"
-    if requested_batch_key is None or not batch_stats_path.is_file():
-        # Upgrade a legacy cache by fitting the old global model.  New runs
-        # always write batch_count_stats in run_stats().
+    if requested_batch_key is None:
         clip = _fit_seurat_clip(output_dir, span)
         batch_mode = False
     else:
+        if not batch_stats_path.is_file():
+            raise RuntimeError(
+                "Cell-line-aware HVG selection requires batch_count_stats.npz. "
+                "The project has legacy/global statistics; rerun statistics in "
+                "a new project before selecting HVGs."
+            )
         clip = _fit_batch_seurat_clips(output_dir, span)
         batch_mode = True
     clip_path = output_dir / "seurat_clip_values.npy"
@@ -1167,31 +1176,37 @@ def run_hvg(args):
     symbols = _load_json(output_dir / "state_gene_symbols.json")
     np.save(output_dir / "hvg_state_ids.npy", hvg_state_ids)
     np.save(output_dir / "seurat_v3_normalized_variance.npy", normalized_variance)
-    # Record the exact HVG contract used for this project.  In particular,
-    # the paper uses a dataset-level (unbatched) Seurat-v3 fit.
+    # Record the exact HVG contract used for this project. ``population``
+    # fits within-cell-line statistics and then merges one shared gene space;
+    # ``None`` retains an explicit global Seurat-v3 compatibility mode.
     stats_manifest_path = output_dir / "stats_manifest.json"
     stats_manifest = _load_json(stats_manifest_path)
     stats_manifest["hvg_batch_key"] = requested_batch_key
-    _dump_json(stats_manifest_path, stats_manifest)
-    _dump_json(
-        output_dir / "hvg.json",
-        {
-            "flavor": "seurat_v3",
-            "batch_key": requested_batch_key if batch_mode else None,
-            "cells_per_batch": int(
-                _load_json(output_dir / "stats_manifest.json").get(
-                    "hvg_cells_per_population", 10_000
-                )
-            ) if batch_mode else None,
-            "n_top_genes": n_hvg,
-            "seurat_span": span,
-            "merge_rule": "median_rank_then_nbatches" if batch_mode else "global_normalized_variance",
-            "highly_variable_nbatches": hvg_nbatches[hvg_state_ids].tolist()
-            if hvg_nbatches is not None else None,
-            "state_ids": hvg_state_ids.tolist(),
-            "gene_symbols": [symbols[index] for index in hvg_state_ids],
-        },
+    stats_manifest["hvg_protocol"] = (
+        "cell_line_aware_shared_v1" if batch_mode else "global_seurat_v3_v1"
     )
+    hvg = {
+        "protocol": stats_manifest["hvg_protocol"],
+        "flavor": "seurat_v3",
+        "batch_key": requested_batch_key if batch_mode else None,
+        "cells_per_batch": int(stats_manifest.get("hvg_cells_per_population", 10_000))
+        if batch_mode else None,
+        "n_top_genes": n_hvg,
+        "seurat_span": span,
+        "merge_rule": "median_rank_then_nbatches" if batch_mode else "global_normalized_variance",
+        "populations": list(selected_cell_lines),
+        "sampled_cells_by_population": dict(
+            stats_manifest.get("hvg_sampled_cells_by_population", {})
+        ) if batch_mode else {},
+        "highly_variable_nbatches": hvg_nbatches[hvg_state_ids].tolist()
+        if hvg_nbatches is not None else None,
+        "state_ids": hvg_state_ids.tolist(),
+        "gene_symbols": [symbols[index] for index in hvg_state_ids],
+    }
+    hvg["fingerprint"] = hvg_fingerprint(hvg)
+    stats_manifest["hvg_fingerprint"] = hvg["fingerprint"]
+    _dump_json(stats_manifest_path, stats_manifest)
+    _dump_json(output_dir / "hvg.json", hvg)
     mode = "batch-aware" if batch_mode else "global"
     print(f"hvg complete: {mode} Seurat-v3 top {n_hvg:,}")
 

@@ -11,6 +11,7 @@ from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
 
 from .._common.feedback import Feedback
+from .._common.hvg import load_hvg_contract
 from .._common.paths import DatasetPaths
 from .networks import (
     UNIMOL_CHECKPOINT,
@@ -29,6 +30,11 @@ from .shared import (
     prepare_state_inputs,
     validate_shared_artifacts,
 )
+
+
+def _hvg_identity(paths: DatasetPaths) -> tuple[dict, str]:
+    payload = load_hvg_contract(paths.prepared)
+    return payload, str(payload["fingerprint"])
 
 
 def _artifact_root(paths: DatasetPaths, artifact: str) -> Path:
@@ -141,6 +147,7 @@ def _deg_masks(
     dictionary and restricts the candidate universe to its prepared HVGs.
     """
     del control_group_means
+    _, hvg_fingerprint = _hvg_identity(paths)
     mask_mode = str(mask_mode).casefold()
     if mask_mode not in {"official", "validation"}:
         raise ValueError("CRISP deg mask mode must be official or validation")
@@ -224,6 +231,7 @@ def _deg_masks(
                 )
                 and metadata.get("top_k") == int(top_k)
                 and metadata.get("hvg_dim") == hvg_dim
+                and metadata.get("hvg_fingerprint") == hvg_fingerprint
                 and np.array_equal(saved_ids, condition_ids)
                 and saved_mask.shape == (len(condition_ids), hvg_dim)
             )
@@ -297,6 +305,7 @@ def _deg_masks(
                             "scanpy.rank_genes_groups(default method='t-test')"
                         ),
                         "upstream_rankby_abs": True,
+                        "hvg_fingerprint": hvg_fingerprint,
                     },
                     indent=2,
                 ),
@@ -313,6 +322,7 @@ def _deg_masks(
             "mask_file": mask_target.name,
             "metadata_file": metadata_target.name,
             "dtype": "bool",
+            "hvg_fingerprint": hvg_fingerprint,
         }
         outputs.extend((ids_target, mask_target, metadata_target))
     return payload, outputs
@@ -351,6 +361,8 @@ def _control_group_means(
     *,
     overwrite: bool,
 ) -> tuple[dict[str, dict], list[Path]]:
+    _, hvg_fingerprint = _hvg_identity(paths)
+    _, existing_manifest = _artifact_manifest(paths, "control_means", directory)
     shapes_file = paths.prepared / "materialized_shapes.json"
     if not shapes_file.is_file():
         raise FileNotFoundError(
@@ -393,6 +405,7 @@ def _control_group_means(
                 np.array_equal(saved_ids, group_ids)
                 and saved_embeddings.shape == (len(group_ids), 2048)
                 and saved_hvg.shape == (len(group_ids), hvg_dim)
+                and existing_manifest.get("hvg_fingerprint") == hvg_fingerprint
             )
         if not reusable:
             offsets = np.asarray(np.load(required["offsets"]), dtype=np.int64)
@@ -451,6 +464,7 @@ def _control_group_means(
             "embedding_dim": 2048,
             "hvg_dim": hvg_dim,
             "dtype": "float16",
+            "hvg_fingerprint": hvg_fingerprint,
         }
         outputs.extend(targets.values())
     return payload, outputs
@@ -592,6 +606,7 @@ def prepare_moa_features(
     overwrite: bool = False,
 ):
     """Prepare the split-dependent MoA drug representation."""
+    _, hvg_fingerprint = _hvg_identity(paths)
     smiles = _smiles(paths)
     from ..train.splits import resolve_split
 
@@ -599,7 +614,17 @@ def prepare_moa_features(
     directory = paths.split_material_dir(split["split_id"], "drug_moa")
     target = directory / "moa.float32.npy"
     metadata = directory / "moa_manifest.json"
-    if overwrite or not target.is_file() or not metadata.is_file():
+    cached_hvg_fingerprint = None
+    if metadata.is_file():
+        cached_hvg_fingerprint = json.loads(metadata.read_text(encoding="utf-8")).get(
+            "hvg_fingerprint"
+        )
+    if (
+        overwrite
+        or not target.is_file()
+        or not metadata.is_file()
+        or cached_hvg_fingerprint != hvg_fingerprint
+    ):
         directory.mkdir(parents=True, exist_ok=True)
         matrix, info = _moa_embedding(
             paths, smiles, split_file=split_path,
@@ -611,7 +636,8 @@ def prepare_moa_features(
             "artifact": "drug_moa",
             "representation": "MoA response embedding",
             "consumers": ["cmonge"], "smiles": smiles,
-            "shape": list(matrix.shape), **info,
+            "shape": list(matrix.shape), "hvg_fingerprint": hvg_fingerprint,
+            **info,
         }, indent=2), encoding="utf-8")
     payload = {
         "artifact": "drug_moa", "hvg_dim": 2000,
@@ -619,6 +645,7 @@ def prepare_moa_features(
         "matrix": target.name, "smiles": smiles,
         "shape": list(np.load(target, mmap_mode="r").shape),
         "source": "training perturbation responses (paper ModeOfActionEmbedding contract)",
+        "hvg_fingerprint": hvg_fingerprint,
     }
     return _register_artifact(
         paths, "drug_moa", payload, outputs=[target, metadata], smiles=smiles,
@@ -642,8 +669,12 @@ def _register_artifact(
     existing_smiles = existing.get("smiles") or []
     if existing_smiles and existing_smiles != current_smiles:
         raise RuntimeError("Existing artifact uses a different drug vocabulary")
+    merged_payload = {**existing, **payload}
+    if artifact in {"control_means", "deg_masks", "drug_moa", "expression_bins", "graph_assets"}:
+        _, fingerprint = _hvg_identity(paths)
+        merged_payload["hvg_fingerprint"] = fingerprint
     manifest_file = _write_artifact_manifest(
-        paths, artifact, {**existing, **payload}, current_smiles, root
+        paths, artifact, merged_payload, current_smiles, root
     )
     result_outputs = [*outputs, manifest_file]
     return Feedback(root, stage or f"prepare_{artifact}").finish(

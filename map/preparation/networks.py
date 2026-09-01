@@ -17,6 +17,7 @@ from rdkit import Chem, DataStructs
 from rdkit.Chem import rdFingerprintGenerator
 
 from .._common.paths import DatasetPaths
+from .._common.hvg import load_hvg_contract
 
 
 STRING_LINKS = "9606.protein.links.v12.0.txt.gz"
@@ -677,6 +678,8 @@ def _prepare_expression_inputs(
     shapes = json.loads(
         (paths.prepared / "materialized_shapes.json").read_text(encoding="utf-8")
     )
+    hvg_contract = load_hvg_contract(paths.prepared)
+    hvg_fingerprint = hvg_contract["fingerprint"]
     dimensions = {int(value["hvg_dim"]) for value in shapes.values()}
     if dimensions != {int(hvg_count)}:
         raise ValueError(
@@ -688,6 +691,11 @@ def _prepare_expression_inputs(
     reusable = not overwrite and manifest.is_file() and boundaries_file.is_file()
     if reusable:
         payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if payload.get("hvg_fingerprint") != hvg_fingerprint:
+            raise RuntimeError(
+                "Existing expression bins use another HVG contract; rerun "
+                "preparation with overwrite=True or use a new project"
+            )
         reusable = (
             payload.get("format") in {"expression_bins_v1", "xpert_hvg_expression_v2"}
             and payload.get("gene_count") == int(hvg_count)
@@ -697,6 +705,7 @@ def _prepare_expression_inputs(
             == int(sample_cells_per_population)
             and payload.get("requested_expression_min") == expression_min
             and payload.get("requested_expression_max") == expression_max
+            and payload.get("hvg_fingerprint") == hvg_fingerprint
         )
         if reusable:
             boundaries = np.load(boundaries_file)
@@ -746,6 +755,8 @@ def _prepare_expression_inputs(
         "representation": "library_size_normalized_log1p_hvg_expression",
         "target_sum": sorted({float(value.get("target_sum", 10000.0)) for value in shapes.values()}),
         "gene_space": "prepared_hvg",
+        "hvg_protocol": hvg_contract["protocol"],
+        "hvg_fingerprint": hvg_fingerprint,
         "gene_count": int(hvg_count),
         "input_modes": sorted(modes),
         "mode_contracts": {
@@ -805,6 +816,8 @@ def _prepare_graph_assets(
     overwrite: bool = False,
 ) -> tuple[dict, list[Path]]:
     output_dir = Path(output_dir)
+    hvg_contract = load_hvg_contract(paths.prepared)
+    hvg_fingerprint = hvg_contract["fingerprint"]
     raw_input_formats = (
         (input_formats,) if isinstance(input_formats, str) else input_formats
     )
@@ -865,6 +878,11 @@ def _prepare_graph_assets(
             raise RuntimeError(
                 "Existing graph inputs use a legacy STATE-expression contract; "
                 "rerun graph preparation with overwrite=True"
+            )
+        if payload.get("hvg_fingerprint") != hvg_fingerprint:
+            raise RuntimeError(
+                "Existing graph assets use another HVG contract; rerun graph "
+                "preparation with overwrite=True or use a new project"
             )
         expression_outputs = []
         if include_expression:
@@ -1061,6 +1079,8 @@ def _prepare_graph_assets(
         "full_gene_count": len(symbols),
         "hvg_indices": hvg_indices.tolist(),
         "model_gene_space": "prepared_hvg",
+        "hvg_protocol": hvg_contract["protocol"],
+        "hvg_fingerprint": hvg_fingerprint,
         "smiles": smiles,
         "hidden_size": int(hidden_size),
         "max_atoms": int(max_atoms),

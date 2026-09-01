@@ -7,15 +7,25 @@ from typing import Any, Iterable, Mapping
 import numpy as np
 
 from .._common.feedback import Feedback, StageResult
+from .._common.hvg import load_hvg_contract
 from .._common.paths import DatasetPaths
 
 
 _SHARED_FILES = (
+    "hvg.json",
     "materialized_shapes.json",
     "conditions.parquet",
     "materialization_manifest.json",
     "preparation_config.json",
 )
+
+
+def _validated_hvg_contract(paths: DatasetPaths, errors: list[str]) -> dict[str, Any]:
+    try:
+        return load_hvg_contract(paths.prepared)
+    except (FileNotFoundError, RuntimeError, OSError, json.JSONDecodeError) as error:
+        errors.append(f"hvg: {error}")
+        return {}
 
 
 def _read_json(path: Path, errors: list[str], label: str) -> dict[str, Any]:
@@ -262,6 +272,7 @@ def _validate_method_artifacts(
     errors: list[str],
     files: dict[str, dict[str, Any]],
     inspect_arrays: bool,
+    hvg_fingerprint: str | None,
     material_root: Path | None = None,
 ) -> dict[str, Any]:
     if model == "trainmean":
@@ -295,6 +306,15 @@ def _validate_method_artifacts(
         },
     }.get(model, {})
     result: dict[str, Any] = {"manifest": str(manifest_file) if manifest_file else None}
+    requires_hvg_identity = model in {"crisp", "xpert"} or (
+        model == "cmonge" and material_root is not None
+    )
+    if requires_hvg_identity:
+        if not hvg_fingerprint or manifest.get("hvg_fingerprint") != hvg_fingerprint:
+            errors.append(
+                f"{model}: dependent artifact belongs to another HVG contract; "
+                "regenerate it after HVG selection"
+            )
     if drug_count is not None and manifest.get("smiles") is not None:
         if len(manifest["smiles"]) != drug_count:
             errors.append(f"{model}: drug vocabulary has {len(manifest['smiles'])}, expected {drug_count}")
@@ -461,6 +481,22 @@ def validate_method(
     for name in _SHARED_FILES:
         _required_file(paths.prepared / name, files, errors, name)
     shapes = _read_json(paths.prepared / "materialized_shapes.json", errors, "materialized_shapes")
+    hvg = _validated_hvg_contract(paths, errors)
+    materialization = _read_json(
+        paths.prepared / "materialization_manifest.json", errors, "materialization"
+    )
+    preparation_config = _read_json(
+        paths.prepared / "preparation_config.json", errors, "preparation_config"
+    )
+    hvg_fingerprint = hvg.get("fingerprint")
+    if hvg_fingerprint:
+        hvg_artifact = materialization.get("artifacts", {}).get("hvg_expression", {})
+        if materialization.get("hvg_fingerprint") != hvg_fingerprint:
+            errors.append("materialization: HVG fingerprint does not match hvg.json")
+        if hvg_artifact.get("hvg_fingerprint") != hvg_fingerprint:
+            errors.append("hvg_expression: HVG fingerprint does not match hvg.json")
+        if preparation_config.get("hvg_fingerprint") != hvg_fingerprint:
+            errors.append("preparation_config: HVG fingerprint does not match hvg.json")
     if not shapes:
         shapes = {}
     populations = _population_shapes(
@@ -555,7 +591,7 @@ def validate_method(
         )
         model_info = _validate_method_artifacts(
             paths, model, regime, options, shapes, drug_count, errors, files, inspect,
-            material_root,
+            hvg_fingerprint=hvg_fingerprint, material_root=material_root,
         )
     payload = {
         "format": "map_training_material_validation_v1",
@@ -569,7 +605,12 @@ def validate_method(
         "complete": not errors,
         "status": "pass" if not errors else "fail",
         "errors": list(dict.fromkeys(errors)),
-        "shared": {"files": files, "populations": populations, "conditions": conditions_info},
+        "shared": {
+            "files": files,
+            "populations": populations,
+            "conditions": conditions_info,
+            "hvg": hvg,
+        },
         "split": split,
         "model_material": model_info,
     }
@@ -626,6 +667,19 @@ def validate_preparation(
         resolved_splits.append(split_path)
     required.extend(resolved_splits)
     missing = [str(path) for path in required if not path.is_file()]
+    hvg = _validated_hvg_contract(paths, missing)
+    hvg_fingerprint = hvg.get("fingerprint")
+    if hvg_fingerprint:
+        hvg_artifact = manifest.get("artifacts", {}).get("hvg_expression", {})
+        preparation = _read_json(
+            preparation_config_path, missing, "preparation_config"
+        )
+        if manifest.get("hvg_fingerprint") != hvg_fingerprint:
+            missing.append("materialization manifest HVG fingerprint mismatch")
+        if hvg_artifact.get("hvg_fingerprint") != hvg_fingerprint:
+            missing.append("hvg_expression HVG fingerprint mismatch")
+        if preparation.get("hvg_fingerprint") != hvg_fingerprint:
+            missing.append("preparation config HVG fingerprint mismatch")
     checks = []
     core_ready = manifest_path.is_file() and shapes_path.is_file()
     if core_ready:
@@ -829,6 +883,7 @@ def validate_preparation(
             if preparation_config_path.is_file()
             else None
         ),
+        "hvg": hvg,
     }
     output = paths.prepared / "preparation_validation.json"
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")

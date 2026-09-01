@@ -12,6 +12,7 @@ from typing import Any
 
 from .._common.contracts import run_handler_stage
 from .._common.feedback import Feedback
+from .._common.hvg import load_hvg_contract
 from .._common.identifiers import preparation_identifier
 from .._common.paths import DatasetPaths
 from ..preprocess.selection import DataSelection
@@ -93,6 +94,7 @@ def validate_shared_artifacts(paths: DatasetPaths) -> dict[str, Any]:
     if not manifest_path.is_file():
         raise FileNotFoundError(f"Shared-artifact manifest is missing: {manifest_path}")
     manifest = _load_manifest(paths)
+    hvg = load_hvg_contract(paths.prepared)
     pending = sorted(set(SHARED_ARTIFACTS) - set(manifest["artifacts"]))
     if not manifest.get("complete") or pending:
         raise RuntimeError(
@@ -109,6 +111,16 @@ def validate_shared_artifacts(paths: DatasetPaths) -> dict[str, Any]:
         raise FileNotFoundError(
             "Shared artifact files are missing: " + ", ".join(missing)
         )
+    recorded = manifest.get("hvg_fingerprint")
+    hvg_expression = manifest["artifacts"].get("hvg_expression", {})
+    if (
+        recorded != hvg["fingerprint"]
+        or hvg_expression.get("hvg_fingerprint") != hvg["fingerprint"]
+    ):
+        raise RuntimeError(
+            "Materialized HVG expression belongs to another HVG contract; "
+            "regenerate HVG-dependent material for this project."
+        )
     return manifest
 
 
@@ -124,6 +136,7 @@ def _update_preparation_config(
     filter_payload = json.loads(
         (paths.prepared / "condition_filter.json").read_text(encoding="utf-8")
     )
+    hvg = load_hvg_contract(paths.prepared)
     hvg_dim = int(next(iter(shapes.values()))["hvg_dim"])
     complete = all(name in manifest["artifacts"] for name in SHARED_ARTIFACTS)
     payload = {
@@ -134,6 +147,7 @@ def _update_preparation_config(
             target_sum=target_sum,
             log1p=True,
             condition_filter_id=filter_payload["filter_id"],
+            hvg_fingerprint=hvg["fingerprint"],
         ),
         "populations": list(shapes),
         "n_top_genes": hvg_dim,
@@ -142,6 +156,8 @@ def _update_preparation_config(
         "log1p": True,
         "dtype": "float16",
         "gene_vocabulary": "STATE_ESM2",
+        "hvg_protocol": hvg["protocol"],
+        "hvg_fingerprint": hvg["fingerprint"],
         "condition_filter": {
             key: filter_payload[key]
             for key in (
@@ -175,6 +191,7 @@ def _prepare_artifact(
             raise FileNotFoundError(
                 f"{required} is missing; complete common preprocessing first"
             )
+    hvg = load_hvg_contract(paths.prepared)
     manifest = _load_manifest(paths)
     previous = manifest["artifacts"].get(name)
     configuration = {
@@ -190,6 +207,13 @@ def _prepare_artifact(
         if previous.get("configuration") != configuration:
             raise FileExistsError(
                 f"{name} exists with another configuration; use a new project"
+            )
+        if name == "hvg_expression" and previous.get("hvg_fingerprint") != hvg[
+            "fingerprint"
+        ]:
+            raise RuntimeError(
+                "hvg_expression belongs to another HVG contract; regenerate it "
+                "with overwrite=True or use a new project"
             )
         return Feedback(paths.prepared, f"prepare_{name}").finish(
             {**previous, "reused": True}, [_manifest_path(paths)]
@@ -214,7 +238,11 @@ def _prepare_artifact(
         "populations": list(shapes),
         "cells": sum(int(value["n_cells"]) for value in shapes.values()),
     }
+    if name == "hvg_expression":
+        artifact["hvg_fingerprint"] = hvg["fingerprint"]
     manifest["artifacts"][name] = artifact
+    if name == "hvg_expression":
+        manifest["hvg_fingerprint"] = hvg["fingerprint"]
     manifest["configuration"] = configuration
     manifest["complete"] = all(
         value in manifest["artifacts"] for value in SHARED_ARTIFACTS
