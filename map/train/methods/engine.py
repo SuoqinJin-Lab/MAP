@@ -18,6 +18,8 @@ _COMMON = {
     "batch_size": 1,
     "epochs": 100,
     "max_steps": 100_000,
+    "early_stopping_patience": 1000,
+    "early_stopping_min_delta": 0.0,
     "checkpoint_every_epochs": 5,
     "samples_per_epoch": None,
     "lr": 1e-3,

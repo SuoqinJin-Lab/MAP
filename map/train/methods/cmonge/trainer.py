@@ -10,11 +10,13 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from ..common import (
     atomic_torch_save,
     build_loaders,
+    EarlyStopping,
     finish_distributed,
     move_batch,
     precision,
     raw_model,
     seed_everything,
+    synchronized_loss,
     setup_distributed,
     write_run_config,
 )
@@ -109,7 +111,10 @@ def _warmup_cosine_scheduler(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
 
-def _pretrain_autoencoder(model, loader, sampler, dataset, args, device) -> None:
+def _pretrain_autoencoder(
+    model, loader, sampler, dataset, args, device,
+    early_stopping: EarlyStopping,
+) -> EarlyStopping:
     implementation = raw_model(model)
     optimizer = torch.optim.AdamW(
         implementation.autoencoder.parameters(),
@@ -144,9 +149,16 @@ def _pretrain_autoencoder(model, loader, sampler, dataset, args, device) -> None
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
+                if early_stopping.update(synchronized_loss(loss.detach(), device)):
+                    break
+            if early_stopping.stopped:
+                break
+        if early_stopping.stopped:
+            break
+    return early_stopping
 
 
-def _checkpoint(model, optimizer, scheduler, args, epoch, step) -> dict:
+def _checkpoint(model, optimizer, scheduler, args, epoch, step, early_stopping=None, autoencoder_early_stopping=None) -> dict:
     implementation = raw_model(model)
     return {
         "format": "map_method_v2",
@@ -159,6 +171,11 @@ def _checkpoint(model, optimizer, scheduler, args, epoch, step) -> dict:
         "scheduler_state_dict": scheduler.state_dict(),
         "args": vars(args),
         "model_configuration": implementation.configuration(),
+        "early_stopping": early_stopping.state_dict() if early_stopping is not None else None,
+        "autoencoder_early_stopping": (
+            autoencoder_early_stopping.state_dict()
+            if autoencoder_early_stopping is not None else None
+        ),
     }
 
 
@@ -204,6 +221,12 @@ def train(args) -> None:
         args.data_dir, hvg_dim, args.populations, material_dir=args.material_dir, **_model_options(args)
     ).to(device)
     start_epoch = global_step = 0
+    early_stopping = EarlyStopping(
+        args.early_stopping_patience, args.early_stopping_min_delta
+    )
+    autoencoder_early_stopping = EarlyStopping(
+        args.early_stopping_patience, args.early_stopping_min_delta
+    )
     checkpoint = None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
@@ -224,7 +247,8 @@ def train(args) -> None:
             else model
         )
         _pretrain_autoencoder(
-            ae_model, train_loader, train_sampler, training, args, device
+            ae_model, train_loader, train_sampler, training, args, device,
+            autoencoder_early_stopping,
         )
         pretrained_model = raw_model(ae_model)
         if world > 1:
@@ -245,6 +269,10 @@ def train(args) -> None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint["global_step"])
+        early_stopping.load_state_dict(checkpoint.get("early_stopping"))
+        autoencoder_early_stopping.load_state_dict(
+            checkpoint.get("autoencoder_early_stopping")
+        )
         if "scheduler_state_dict" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         else:
@@ -287,21 +315,28 @@ def train(args) -> None:
             optimizer.step()
             scheduler.step()
             global_step += 1
-            if global_step >= args.max_steps:
+            stop_requested = early_stopping.update(
+                synchronized_loss(value.detach(), device)
+            )
+            if stop_requested or global_step >= args.max_steps:
                 break
         if rank == 0:
             if (epoch + 1) % args.checkpoint_every_epochs == 0:
-                payload = _checkpoint(model, optimizer, scheduler, args, epoch, global_step)
+                payload = _checkpoint(
+                    model, optimizer, scheduler, args, epoch, global_step,
+                    early_stopping, autoencoder_early_stopping,
+                )
                 atomic_torch_save(
                     payload, output / "checkpoints" / f"epoch_{epoch + 1:04d}.pt"
                 )
-        if global_step >= args.max_steps:
+        if early_stopping.stopped or global_step >= args.max_steps:
             break
     if rank == 0:
-        atomic_torch_save(
-            _checkpoint(model, optimizer, scheduler, args, last_epoch, global_step),
-            output / "last.pt",
+        payload = _checkpoint(
+            model, optimizer, scheduler, args, last_epoch, global_step,
+            early_stopping, autoencoder_early_stopping,
         )
+        atomic_torch_save(payload, output / "last.pt")
     finish_distributed()
 
 

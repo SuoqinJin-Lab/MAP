@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--workers", type=int, default=8)
     split = commands.add_parser("create-split")
     _project(split)
-    split.add_argument("--rule", choices=("unprofiled_drug", "unseen_combination"), required=True)
+    split.add_argument("--rule", choices=("unprofiled_drug", "unseen_combination", "combosciplex"), required=True)
     split.add_argument("--external-test-size", type=_size, required=True)
     split.add_argument("--internal-test-fraction", type=float, default=0.2)
     split.add_argument(

@@ -112,7 +112,12 @@ class AnnDataHandler:
         columns = data.obs.columns
         resolved = {
             "population": _optional_column(columns, self.requested_columns["population"], self.POPULATION_ALIASES),
-            "perturbation": _resolve_column(columns, self.requested_columns["perturbation"], self.PERTURBATION_ALIASES, "perturbation column"),
+            "perturbation": _resolve_column(
+                columns,
+                self.requested_columns["perturbation"],
+                self.PERTURBATION_ALIASES,
+                "perturbation column",
+            ),
             "dose": _optional_column(columns, self.requested_columns["dose"], self.DOSE_ALIASES),
             "smiles": _optional_column(columns, self.requested_columns["smiles"], self.SMILES_ALIASES),
             "group": _optional_column(columns, self.requested_columns["group"], self.GROUP_ALIASES),
@@ -278,17 +283,6 @@ def sciplex(source, projects, *, frozen_models, dataset="SciPlex3", **kwargs):
     )
 
 
-def combosciplex(source, projects, *, frozen_models, dataset="ComboSciPlex", **kwargs):
-    kwargs.setdefault("control_values", ("vehicle", "dmso", "control"))
-    return anndata(
-        source,
-        projects,
-        frozen_models=frozen_models,
-        dataset=dataset,
-        **kwargs,
-    )
-
-
 def nips(source, projects, *, frozen_models, dataset="NIPS", **kwargs):
     return anndata(
         source, projects, frozen_models=frozen_models, dataset=dataset, **kwargs
@@ -302,5 +296,5 @@ def op3(source, projects, *, frozen_models, dataset="OP3", **kwargs):
 
 
 __all__ = [
-    "AnnDataHandler", "anndata", "combosciplex", "nips", "op3", "sciplex",
+    "AnnDataHandler", "anndata", "nips", "op3", "sciplex",
 ]

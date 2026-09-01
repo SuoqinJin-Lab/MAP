@@ -90,6 +90,10 @@ def train(args) -> None:
             "split_id": training.split_id,
             "training_conditions": condition_count,
             "model_configuration": model.configuration(),
+            "early_stopping": {
+                "applicable": False,
+                "reason": "closed_form_fit",
+            },
         },
     )
     checkpoint = {
@@ -100,6 +104,10 @@ def train(args) -> None:
         "model_state_dict": model.state_dict(),
         "args": vars(args),
         "model_configuration": model.configuration(),
+        "early_stopping": {
+            "applicable": False,
+            "reason": "closed_form_fit",
+        },
     }
     atomic_torch_save(checkpoint, output / "last.pt")
     atomic_torch_save(checkpoint, output / "checkpoints" / "epoch_0001.pt")

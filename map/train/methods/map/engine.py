@@ -30,6 +30,8 @@ METHOD44 = {
     "amp_dtype": "bf16",
     "compile_mode": "default",
     "seed": 42,
+    "combination_fusion": "avg_emb",
+    "max_components": 2,
 }
 
 
@@ -51,7 +53,7 @@ def train_map(
     dry_run: bool = False,
     **overrides: Any,
 ) -> StageResult:
-    if regime not in {"unprofiled_drug", "unseen_combination"}:
+    if regime not in {"unprofiled_drug", "unseen_combination", "combosciplex"}:
         raise ValueError(regime)
     unknown = sorted(set(overrides) - set(METHOD44))
     if unknown:
@@ -116,6 +118,8 @@ def train_map(
             "amp_dtype": params["amp_dtype"],
             "train_split": train_split,
             "populations": list(populations) if populations else list(shapes),
+            "combination_fusion": params["combination_fusion"],
+            "max_components": params["max_components"],
         },
     )
     if Path(run_id).name != run_id:

@@ -58,7 +58,12 @@ def create_project(selection: DataSelection, *, project_name: str) -> DatasetPat
 
 
 def _manifest_path(paths: DatasetPaths) -> Path:
-    return paths.prepared / "materialization_manifest.json"
+    """Canonical project materialization manifest.
+
+    ``manifest.json`` is the sole public contract at the root of
+    ``materialize``.
+    """
+    return paths.prepared / "manifest.json"
 
 
 def _load_manifest(paths: DatasetPaths) -> dict[str, Any]:
@@ -193,6 +198,17 @@ def _prepare_artifact(
             )
     hvg = load_hvg_contract(paths.prepared)
     manifest = _load_manifest(paths)
+    # Materialization may be a long-running handler stage.  Create the
+    # project-level manifest before entering it so interrupted jobs still
+    # leave an inspectable, machine-readable contract behind.
+    manifest_path = _manifest_path(paths)
+    if not manifest_path.is_file():
+        manifest.setdefault("format", "map_materialization_v1")
+        manifest.setdefault("artifacts", {})
+        manifest.setdefault("available_artifacts", list(SHARED_ARTIFACTS))
+        manifest.setdefault("complete", False)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     previous = manifest["artifacts"].get(name)
     configuration = {
         "target_sum": float(target_sum),
@@ -248,7 +264,7 @@ def _prepare_artifact(
         value in manifest["artifacts"] for value in SHARED_ARTIFACTS
     )
     manifest["available_artifacts"] = list(SHARED_ARTIFACTS)
-    manifest_path = _manifest_path(paths)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     config_path = _update_preparation_config(
         paths, manifest, target_sum=target_sum, pad_length=pad_length

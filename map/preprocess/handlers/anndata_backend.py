@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import json
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,7 @@ def _value(row, column: str | None, default=""):
 def _text(value, fallback=""):
     if value is None:
         return fallback
-    text = str(value).strip()
+    text = " ".join(str(value).split())
     return fallback if text.casefold() in {"", "nan", "none", "null"} else text
 
 
@@ -71,17 +72,22 @@ def _canonical_source(contract: dict[str, Any], output_dir: Path, shard_size: in
             if population not in populations:
                 continue
             perturbation = _text(_value(row, columns["perturbation"]))
-            control = perturbation.casefold() in controls
-            drug = "DMSO_TF" if control else perturbation
-            dose = 0.0 if control else float(_value(row, columns.get("dose"), 0.0))
-            smiles = "" if control else _text(
+            dose = float(_value(row, columns.get("dose"), 1.0))
+            smiles = _text(
                 _value(row, columns.get("smiles"), ""),
                 smiles_map.get(perturbation, ""),
             )
-            if not control and not smiles:
-                raise ValueError(
-                    f"Missing SMILES for perturbation {perturbation!r}; set smiles_key or smiles_map"
-                )
+            control = perturbation.casefold() in controls
+            if control:
+                drug = "DMSO_TF"
+                dose = 0.0
+                smiles = ""
+            else:
+                drug = perturbation
+                if not smiles:
+                    raise ValueError(
+                        f"Missing SMILES for perturbation {perturbation!r}; set smiles_key or smiles_map"
+                    )
             group = _text(_value(row, columns.get("group"), "default"), "default")
             vector = matrix[offset]
             if sparse_matrix:

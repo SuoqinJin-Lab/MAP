@@ -508,10 +508,16 @@ def _embed_static_kind(
         "float16": torch.float16,
         "float32": torch.float32,
     }[dtype]
-    conditions = pd.read_parquet(
-        paths.prepared / "conditions.parquet", columns=["canonical_smiles"]
-    )
-    drug_smiles = sorted(conditions["canonical_smiles"].astype(str).unique().tolist())
+    conditions = pd.read_parquet(paths.prepared / "conditions.parquet")
+    if "component_smiles" in conditions.columns:
+        drug_smiles = sorted({
+            str(smiles)
+            for values in conditions["component_smiles"]
+            for smiles in (values.tolist() if hasattr(values, "tolist") else values if isinstance(values, (list, tuple)) else [values])
+            if str(smiles).strip()
+        })
+    else:
+        drug_smiles = sorted(conditions["canonical_smiles"].astype(str).unique().tolist())
     raw_gene_embeddings = torch.load(
         esm_embeddings, map_location="cpu", weights_only=False
     )

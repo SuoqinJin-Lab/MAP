@@ -34,11 +34,11 @@ class LlamaBidirectionalModel(LlamaModel):
         return None
 
 
-def map_transformer(num_gene_tokens: int, width: int = 1024) -> nn.Module:
+def map_transformer(num_gene_tokens: int, width: int = 1024, num_drug_tokens: int = 1) -> nn.Module:
     # The paper omits the head count; the released MAP implementation fixes it at 8.
     heads = 8
     config = LlamaConfig(
-        max_position_embeddings=num_gene_tokens + 2,
+        max_position_embeddings=num_gene_tokens + int(num_drug_tokens) + 1,
         hidden_size=width,
         intermediate_size=2688,
         num_hidden_layers=4,

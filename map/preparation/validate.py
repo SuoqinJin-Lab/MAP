@@ -15,9 +15,12 @@ _SHARED_FILES = (
     "hvg.json",
     "materialized_shapes.json",
     "conditions.parquet",
-    "materialization_manifest.json",
     "preparation_config.json",
 )
+
+
+def _materialization_manifest_path(paths: DatasetPaths) -> Path:
+    return paths.prepared / "manifest.json"
 
 
 def _validated_hvg_contract(paths: DatasetPaths, errors: list[str]) -> dict[str, Any]:
@@ -186,6 +189,10 @@ def _validate_split(
         errors.append(f"split: invalid split_id {requested_split_id!r} ({error})")
     names = ("train", "internal_test", "external_test")
     aliases = {"internal_test": "val", "external_test": "test"}
+    # ComboSciPlex can intentionally set internal_test_fraction=0 to train on
+    # every singleton and evaluate only on the held-out two-drug conditions.
+    # Keep train/external_test mandatory while allowing that one empty set.
+    allow_empty_internal = float(payload.get("internal_test_fraction", 1.0)) == 0.0
     sets: dict[str, set[int]] = {}
     for name in names:
         source = name if name in payload else aliases.get(name)
@@ -195,7 +202,7 @@ def _validate_split(
         except (TypeError, ValueError):
             sets[name] = set()
             errors.append(f"split: {name} is not an integer id list")
-        if not sets[name]:
+        if not sets[name] and not (name == "internal_test" and allow_empty_internal):
             errors.append(f"split: {name} is empty")
     if sets.get("external_test", set()) & (sets.get("train", set()) | sets.get("internal_test", set())):
         errors.append("split: external_test overlaps train or internal_test")
@@ -480,11 +487,16 @@ def validate_method(
     files: dict[str, dict[str, Any]] = {}
     for name in _SHARED_FILES:
         _required_file(paths.prepared / name, files, errors, name)
+    materialization_path = _materialization_manifest_path(paths)
+    files["manifest.json"] = {
+        "path": str(materialization_path),
+        "exists": materialization_path.is_file(),
+    }
+    if not materialization_path.is_file():
+        errors.append(f"manifest.json: missing {paths.prepared / 'manifest.json'}")
     shapes = _read_json(paths.prepared / "materialized_shapes.json", errors, "materialized_shapes")
     hvg = _validated_hvg_contract(paths, errors)
-    materialization = _read_json(
-        paths.prepared / "materialization_manifest.json", errors, "materialization"
-    )
+    materialization = _read_json(materialization_path, errors, "materialization")
     preparation_config = _read_json(
         paths.prepared / "preparation_config.json", errors, "preparation_config"
     )
@@ -529,8 +541,25 @@ def validate_method(
             missing_columns = sorted(required_columns - names)
             if missing_columns:
                 errors.append("conditions.parquet: missing columns " + ", ".join(missing_columns))
-            table = pq.read_table(conditions_path, columns=["canonical_smiles"])
-            drug_count = len(set(str(value) for value in table.column(0).to_pylist()))
+            # Static MAPKG tokens are keyed by unique component molecules.
+            # A combination condition can contain two components (and the
+            # same component appears in many single/doublet conditions), so
+            # comparing this cache against the number of condition rows is
+            # incorrect for ComboSciPlex.  Fall back to canonical_smiles for
+            # legacy single-drug tables and flatten component_smiles when the
+            # combination schema is present.
+            if "component_smiles" in names:
+                table = pq.read_table(conditions_path, columns=["component_smiles"])
+                values = set()
+                for row in table.column(0).to_pylist():
+                    if isinstance(row, (list, tuple)):
+                        values.update(str(value) for value in row if str(value).strip())
+                    else:
+                        values.add(str(row))
+                drug_count = len(values)
+            else:
+                table = pq.read_table(conditions_path, columns=["canonical_smiles"])
+                drug_count = len(set(str(value) for value in table.column(0).to_pylist()))
             conditions_info = {"columns": sorted(names), "drugs": drug_count}
         except (OSError, ValueError, KeyError) as error:
             errors.append(f"conditions.parquet: cannot inspect ({error})")
@@ -635,7 +664,7 @@ def validate_preparation(
     split_files: tuple[str | Path, ...] | list[str | Path] | None = None,
 ) -> StageResult:
     report = Feedback(paths.prepared, "validate_preparation")
-    manifest_path = paths.prepared / "materialization_manifest.json"
+    manifest_path = _materialization_manifest_path(paths)
     shapes_path = paths.prepared / "materialized_shapes.json"
     preparation_config_path = paths.prepared / "preparation_config.json"
     required = [
@@ -793,6 +822,7 @@ def validate_preparation(
         if not split_path.is_file():
             continue
         split_payload = json.loads(split_path.read_text(encoding="utf-8"))
+        allow_empty_internal = float(split_payload.get("internal_test_fraction", 1.0)) == 0.0
         sets = {
             name: {int(value) for value in split_payload.get(name, [])}
             for name in ("train", "internal_test", "external_test")
@@ -845,13 +875,22 @@ def validate_preparation(
                 ):
                     row_disjoint = False
                     break
+        required_names = (
+            "train",
+            "external_test",
+        )
         valid_sets = (
             all(
-                sum(len(rows) for rows in row_membership[name].values()) > 0
-                for name in row_membership
+                sum(len(row_membership[name].get(population, ())) for population in row_membership[name]) > 0
+                for name in required_names
+            )
+            and (
+                allow_empty_internal
+                or sum(len(rows) for rows in row_membership["internal_test"].values()) > 0
             )
             if has_row_protocol
-            else all(sets[name] for name in sets)
+            else all(sets[name] for name in required_names)
+            and (allow_empty_internal or bool(sets["internal_test"]))
         )
         if (not row_disjoint if has_row_protocol else not external_disjoint) or not valid_sets:
             missing.append(str(split_path))

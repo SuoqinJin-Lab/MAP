@@ -18,7 +18,7 @@ class MethodSpec:
 
 _SHARED = ("cell_metadata", "hvg_expression")
 METHOD_SPECS = (
-    MethodSpec("map", _SHARED, ("state_inputs", "knowledge_tokens", "condition_embeddings"), frozen_assets=("se600m", "esm2", "mapkg")),
+    MethodSpec("map", _SHARED, ("state_inputs", "knowledge_tokens", "condition_embeddings"), frozen_assets=("se600m", "esm2", "mapkg"), supported_regimes=("unprofiled_drug", "unseen_combination", "combosciplex")),
     MethodSpec("prnet", _SHARED, ("drug_fcfp4",)),
     MethodSpec("chemcpa", _SHARED, ("drug_ecfp4",)),
     MethodSpec("trainmean", _SHARED),

@@ -42,11 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--evaluation-splits",
         nargs="+",
-        choices=("internal_test", "external_test"),
+        choices=("internal_test", "external_test", "both_seen", "one_seen", "both_unseen"),
         default=["internal_test", "external_test"],
     )
     parser.add_argument(
-        "--regime", choices=("unprofiled_drug", "unseen_combination"), required=True
+        "--regime", choices=("unprofiled_drug", "unseen_combination", "combosciplex"), required=True
     )
     parser.add_argument("--se-ckpt")
     parser.add_argument("--esm-embeddings")
@@ -59,7 +59,7 @@ def parse_args() -> argparse.Namespace:
                         help="Cells sampled for each cell-line/drug pseudobulk")
     parser.add_argument(
         "--evaluation-unit",
-        choices=("dose_level_condition", "cell_line_drug"),
+        choices=("dose_level_condition", "cell_line_drug", "cell_line_combination"),
         default="cell_line_drug",
         help=(
             "Primary paper protocol evaluates each cell-line/drug/dose "
@@ -68,6 +68,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num-gene-tokens", type=int, default=2048)
     parser.add_argument("--hvg-dim", type=int, default=2000)
+    parser.add_argument("--combination-fusion", choices=("avg_emb", "two_tokens"))
+    parser.add_argument("--max-components", type=int)
     parser.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44, 45, 46])
     parser.add_argument("--deg-top-k", type=int, default=50)
     parser.add_argument("--deg-fdr", type=float, default=0.05)
@@ -234,7 +236,7 @@ def _aggregate_cell_line_drug(records, prediction_rows, dataset, args, seed, mas
     grouped = defaultdict(list)
     grouped_rows = defaultdict(list)
     for record, row in zip(records, prediction_rows):
-        key = (record["population"], record["drug"])
+        key = (record["population"], record.get("combination_key", record["drug"]))
         grouped[key].append(record)
         grouped_rows[key].append(row)
     output_records, output_rows = [], []
@@ -257,6 +259,7 @@ def _aggregate_cell_line_drug(records, prediction_rows, dataset, args, seed, mas
         output_records.append({
             "population": population,
             "drug": drug,
+            "combination_key": str(drug),
             "condition_id": condition_ids[0],
             "condition_ids": tuple(condition_ids),
             "n_doses": int(len(condition_ids)),
@@ -272,7 +275,10 @@ def _aggregate_cell_line_drug(records, prediction_rows, dataset, args, seed, mas
             "condition_ids": list(condition_ids),
             "population": population,
             "drug": drug,
+            "combination_key": str(drug),
             "smiles": str(rows[0]["smiles"]),
+            "component_smiles": rows[0].get("component_smiles", [str(rows[0]["smiles"])]),
+            "component_doses": rows[0].get("component_doses", [float(rows[0]["dose"])]),
             "dose": float(np.mean([float(row["dose"]) for row in rows])),
             "doses": [float(row["dose"]) for row in rows],
             "predicted": predicted.astype(np.float32).tolist(),
@@ -430,13 +436,13 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
         )
         with precision:
             if args.model == "map":
-                dose = torch.tensor(
-                    [item["drug_conc"]], device=device, dtype=torch.float32
-                )
+                component_smiles = item.get("component_smiles", [item["drug_smiles"]])
+                component_doses = item.get("component_doses", [item["drug_conc"]])
+                dose = torch.tensor([component_doses], device=device, dtype=torch.float32)
                 _, predicted_hvg = model(
                     item["control_gene_ids"].unsqueeze(0).to(device),
                     item["control_expressions"].unsqueeze(0).to(device),
-                    [item["drug_smiles"]],
+                    [component_smiles],
                     dose,
                 )
                 predicted = predicted_hvg.float().mean(1).cpu().numpy()[0]
@@ -497,6 +503,7 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
             "condition_ids": condition_ids,
             "population": population,
             "drug": drug,
+            "combination_key": str(item.get("combination_key", drug)),
             "n_condition_cells": n_condition_cells,
             "predicted": predicted,
             "observed": observed,
@@ -510,6 +517,9 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
             "drug": drug,
             "smiles": str(item["drug_smiles"]),
             "dose": float(item["drug_conc"]),
+            "component_smiles": list(item.get("component_smiles", [item["drug_smiles"]])),
+            "component_doses": list(item.get("component_doses", [item["drug_conc"]])),
+            "combination_key": str(item.get("combination_key", drug)),
             "n_condition_cells": n_condition_cells,
             "predicted": predicted.astype(np.float32).tolist(),
             "observed": observed.astype(np.float32).tolist(),
@@ -558,14 +568,10 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
         )
         for drug in sorted({record["drug"] for record in merged_records})
     }
-    primary = (
-        merged_result
-        if args.evaluation_unit == "cell_line_drug"
-        else dose_result
-    )
+    primary = merged_result if args.evaluation_unit in {"cell_line_drug", "cell_line_combination"} else dose_result
     primary_per_drug = (
         merged_per_drug
-        if args.evaluation_unit == "cell_line_drug"
+        if args.evaluation_unit in {"cell_line_drug", "cell_line_combination"}
         else dose_per_drug
     )
     return primary, prediction_rows, dataset, primary_per_drug, {
@@ -615,10 +621,15 @@ def main() -> None:
         missing = [name for name, value in required.items() if not value]
         if missing:
             raise ValueError(f"MAP evaluation is missing frozen inputs: {', '.join(missing)}")
+        checkpoint_args = checkpoint.get("args", {})
+        fusion = args.combination_fusion or checkpoint_args.get("combination_fusion", "avg_emb")
+        max_components = args.max_components or checkpoint_args.get("max_components", 2)
         model = components["model"](
             **required,
             num_gene_tokens=args.num_gene_tokens,
             hvg_dim=args.hvg_dim,
+            combination_fusion=fusion,
+            max_components=max_components,
         ).to(device)
         if checkpoint.get("format") != "map_method_4_4_v1":
             raise ValueError("Only Method 4.4 checkpoints are supported for MAP")
@@ -660,7 +671,7 @@ def main() -> None:
         "deg_max_cells": args.deg_max_cells,
         "metric_catalog": components["catalog"],
         "evaluation_unit": args.evaluation_unit,
-        "reports": ["dose_level_condition", "cell_line_drug"],
+        "reports": ["dose_level_condition", "cell_line_drug", "cell_line_combination"],
         "deg_method": "wilcoxon_rank_sum_bh",
         "deg_fallback": "none",
         "pds_metric": "cityblock",

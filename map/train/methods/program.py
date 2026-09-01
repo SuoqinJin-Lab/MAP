@@ -19,7 +19,7 @@ def parse_args(argv=None):
     parser.add_argument("--material-dir", dest="material_dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
-        "--regime", choices=("unprofiled_drug", "unseen_combination"), required=True
+        "--regime", choices=("unprofiled_drug", "unseen_combination", "combosciplex"), required=True
     )
     parser.add_argument("--split-file", required=True)
     parser.add_argument("--train-split", default="train")
@@ -28,6 +28,18 @@ def parse_args(argv=None):
     parser.add_argument("--batch-size", type=int, default=defaults["batch_size"])
     parser.add_argument("--epochs", type=int, default=defaults["epochs"])
     parser.add_argument("--max-steps", type=int, default=defaults["max_steps"])
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=defaults.get("early_stopping_patience", 1000),
+        help="Optimizer steps without a new loss minimum; 0 disables it.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=defaults.get("early_stopping_min_delta", 0.0),
+        help="Minimum loss decrease counted as a new minimum.",
+    )
     parser.add_argument(
         "--checkpoint-every-epochs",
         type=int,
@@ -57,6 +69,10 @@ def main(argv=None) -> None:
         args.checkpoint_every_epochs,
     ) <= 0:
         raise ValueError("Training sizes and schedules must be positive")
+    if args.early_stopping_patience < 0 or args.early_stopping_min_delta < 0:
+        raise ValueError(
+            "early-stopping-patience and early-stopping-min-delta must be non-negative"
+        )
     if args.lr <= 0 or args.num_workers < 0:
         raise ValueError("lr must be positive and num_workers non-negative")
     if args.samples_per_epoch is not None and args.samples_per_epoch <= 0:

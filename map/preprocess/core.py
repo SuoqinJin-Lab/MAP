@@ -175,7 +175,7 @@ def select_hvg(
         )
     if any(
         (paths.prepared / name).is_file()
-        for name in ("materialization_manifest.json", "materialized_shapes.json")
+        for name in ("manifest.json", "materialized_shapes.json")
     ):
         raise FileExistsError(
             "This project already has materialized outputs. HVG gene order is "

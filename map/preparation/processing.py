@@ -216,9 +216,9 @@ def _row_level_unprofiled_split(
     external_drugs=None,
 ):
     internal_fraction = float(internal_test_fraction)
-    if not 0 < internal_fraction < 1:
+    if not 0 <= internal_fraction < 1:
         raise ValueError(
-            "internal_test_fraction must be between 0 and 1"
+            "internal_test_fraction must be between 0 (inclusive) and 1"
         )
     drugs = sorted(str(value) for value in conditions["drug"].unique())
     requested = None if external_drugs is None else sorted(
@@ -273,9 +273,9 @@ def _row_level_combination_split(
     conditions, condition_rows, seed, external_test_size, internal_test_fraction, disjoint
 ):
     internal_fraction = float(internal_test_fraction)
-    if not 0 < internal_fraction < 1:
+    if not 0 <= internal_fraction < 1:
         raise ValueError(
-            "internal_test_fraction must be between 0 and 1"
+            "internal_test_fraction must be between 0 (inclusive) and 1"
         )
     populations = tuple(sorted(conditions["population"].unique()))
     drugs_by_population = {
@@ -334,6 +334,79 @@ def _row_level_combination_split(
         "external_test_rows": sampled["external_test_rows"],
         "row_counts": sampled["row_counts"],
     }
+
+
+def _combosciplex_split(conditions, condition_rows, seed, internal_test_fraction):
+    """ComboSciPlex protocol: train on singles, classify held-out pairs by seen drugs."""
+    fraction = float(internal_test_fraction)
+    # ``0`` is useful for the paper-style combination benchmark: train on all
+    # single-drug rows and evaluate only on held-out two-drug conditions.  The
+    # generic split validator treats this as an intentional empty internal set
+    # for the ComboSciPlex rule.
+    if not 0 <= fraction < 1:
+        raise ValueError("internal_test_fraction must be between 0 (inclusive) and 1")
+    components = {}
+    for row in conditions.itertuples(index=False):
+        values = getattr(row, "component_smiles", None)
+        if hasattr(values, "tolist"):
+            values = values.tolist()
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, (list, tuple)):
+            values = [getattr(row, "canonical_smiles")]
+        components[int(row.condition_id)] = tuple(str(value) for value in values)
+    seen = {value for values in components.values() if len(values) == 1 for value in values}
+    train_rows, internal_rows = {}, {}
+    train_ids, internal_ids = [], []
+    for condition_id, (population, rows) in condition_rows.items():
+        if len(components.get(int(condition_id), ())) != 1:
+            continue
+        rng = np.random.default_rng(np.random.SeedSequence([int(seed), int(condition_id), 7103]))
+        selected = np.asarray(rows, dtype=np.int64)[rng.permutation(len(rows))]
+        split_point = int(len(selected) * (1.0 - fraction))
+        train_rows.setdefault(population, []).extend(map(int, selected[:split_point]))
+        internal_rows.setdefault(population, []).extend(map(int, selected[split_point:]))
+        if split_point:
+            train_ids.append(int(condition_id))
+        if split_point < len(selected):
+            internal_ids.append(int(condition_id))
+    category_rows = {"both_seen": {}, "one_seen": {}, "both_unseen": {}}
+    category_ids = {key: [] for key in category_rows}
+    grouped = {}
+    for row in conditions.itertuples(index=False):
+        cid = int(row.condition_id)
+        values = components[cid]
+        if len(values) < 2:
+            continue
+        key = (str(row.population), str(getattr(row, "combination_key", "|".join(sorted(values)))))
+        grouped.setdefault(key, []).append(cid)
+    for (population, _), ids in sorted(grouped.items()):
+        values = components[ids[0]]
+        n_seen = sum(value in seen for value in values)
+        category = "both_seen" if n_seen == len(values) else "both_unseen" if n_seen == 0 else "one_seen"
+        rows = np.concatenate([np.asarray(condition_rows[cid][1], dtype=np.int64) for cid in ids])
+        category_rows[category].setdefault(population, []).extend(map(int, rows))
+        category_ids[category].extend(ids)
+    for values in (*train_rows.values(), *internal_rows.values(), *(rows for category in category_rows.values() for rows in category.values())):
+        values.sort()
+    external_ids = sorted(set(sum(category_ids.values(), [])))
+    external_rows = {pop: sorted(set(sum((category.get(pop, []) for category in category_rows.values()), []))) for pop in set().union(*(set(category) for category in category_rows.values()))}
+    payload = {
+        "train": sorted(set(train_ids)), "internal_test": sorted(set(internal_ids)),
+        "external_test": external_ids,
+        "both_seen": sorted(set(category_ids["both_seen"])),
+        "one_seen": sorted(set(category_ids["one_seen"])),
+        "both_unseen": sorted(set(category_ids["both_unseen"])),
+        "train_rows": train_rows, "internal_test_rows": internal_rows,
+        "external_test_rows": external_rows,
+        "both_seen_rows": category_rows["both_seen"],
+        "one_seen_rows": category_rows["one_seen"],
+        "both_unseen_rows": category_rows["both_unseen"],
+        "row_counts": {"train": sum(map(len, train_rows.values())), "internal_test": sum(map(len, internal_rows.values())), "external_test": sum(map(len, external_rows.values()))},
+        "regime": "combosciplex", "rule": "combosciplex", "seed": int(seed),
+        "split_mode": "combosciplex_single_drug_train",
+    }
+    return payload
 
 
 def build_condition_index(
@@ -400,8 +473,13 @@ def generate_splits(
     external_drugs: list[str] | tuple[str, ...] | None = None,
 ) -> StageResult:
     """Generate one identified generalization split."""
-    if rule not in {"all", "unprofiled_drug", "unseen_combination"}:
+    if rule not in {"all", "unprofiled_drug", "unseen_combination", "combosciplex"}:
         raise ValueError(f"Unknown split rule: {rule}")
+    internal_test_fraction = float(internal_test_fraction)
+    if not np.isfinite(internal_test_fraction) or not 0 <= internal_test_fraction < 1:
+        raise ValueError(
+            "internal_test_fraction must be between 0 (inclusive) and 1"
+        )
     if external_drugs and rule == "unseen_combination":
         raise ValueError("external_drugs is only valid for rule='unprofiled_drug'")
     shapes_path = paths.prepared / "materialized_shapes.json"
@@ -463,6 +541,12 @@ def generate_splits(
             "external_test_size": effective_external,
             "filename": "split.json",
         }
+    if rule in {"all", "combosciplex"}:
+        split_id = split_identifier("combosciplex", 0.0 + combination_external_test_size, internal_test_fraction, seed)
+        split_specs["combosciplex"] = {
+            "split_id": split_id, "external_test_size": combination_external_test_size,
+            "filename": "split.json",
+        }
     if output_name is not None:
         if rule == "all":
             raise ValueError("output_name is only valid when generating one split rule")
@@ -499,11 +583,23 @@ def generate_splits(
                     conditions, condition_rows, seed, spec["external_test_size"],
                     internal_test_fraction, effective_external_drugs,
                 )
+            elif regime == "combosciplex":
+                payload = _combosciplex_split(
+                    conditions, condition_rows, seed, internal_test_fraction,
+                )
             else:
                 payload = _row_level_combination_split(
                     conditions, condition_rows, seed, spec["external_test_size"],
                     internal_test_fraction, disjoint_external_drugs,
                 )
+            # Keep one summary schema across split rules.  ComboSciPlex uses
+            # all observed pairs as external conditions, so its helper does
+            # not need the requested size to construct the split, but the
+            # value is still recorded for reproducibility and reporting.
+            payload.setdefault(
+                "external_test_size_requested", spec["external_test_size"]
+            )
+            payload.setdefault("internal_test_fraction", float(internal_test_fraction))
             payload["split_id"] = spec["split_id"]
             payload["split_file"] = str(target_paths[regime].relative_to(paths.workspace))
             payload["counts"] = {

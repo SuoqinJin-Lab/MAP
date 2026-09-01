@@ -69,6 +69,28 @@ def run_handler_stage(paths, stage: str, **kwargs):
         raise TypeError(
             f"Dataset handler {entrypoint!r} must export run_stage()"
         )
+    # A materialization handler can run for hours and may be invoked directly
+    # by a dataset adapter.  Seed the canonical project manifest before the
+    # handler starts so partial/interrupted runs are still discoverable.
+    if stage == "materialize":
+        output_dir = Path(paths.prepared)
+        manifest = output_dir / "manifest.json"
+        if not manifest.is_file():
+            output_dir.mkdir(parents=True, exist_ok=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "format": "map_materialization_v1",
+                        "artifacts": {},
+                        "available_artifacts": [
+                            "cell_metadata", "state_inputs", "hvg_expression"
+                        ],
+                        "complete": False,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
     return run_stage(
         stage,
         contract=contract,

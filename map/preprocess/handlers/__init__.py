@@ -5,12 +5,14 @@ the generic pipeline in :mod:`map.preprocess.pipeline` performs all shared
 selection and preparation steps.
 """
 
-from .anndata import AnnDataHandler, anndata, combosciplex, op3
+from .anndata import AnnDataHandler, anndata, op3
+from .combosciplex import ComboSciPlexHandler, combosciplex
 from .atlas import AtlasHandler
 from .tahoe import TahoeHandler, TahoePaths, tahoe
 
 __all__ = [
     "AnnDataHandler",
+    "ComboSciPlexHandler",
     "AtlasHandler",
     "TahoePaths",
     "TahoeHandler",

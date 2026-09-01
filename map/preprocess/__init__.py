@@ -4,7 +4,8 @@ from . import builtin
 from .core import filter_conditions
 from .pipeline import DatasetHandler, PreprocessPipeline, pipeline
 from .selection import DataSelection
-from .handlers.anndata import AnnDataHandler, anndata, combosciplex, op3
+from .handlers.anndata import AnnDataHandler, anndata, op3
+from .handlers.combosciplex import ComboSciPlexHandler, combosciplex
 
 __all__ = [
     "builtin",
@@ -14,6 +15,7 @@ __all__ = [
     "PreprocessPipeline",
     "pipeline",
     "AnnDataHandler",
+    "ComboSciPlexHandler",
     "anndata",
     "combosciplex",
     "op3",

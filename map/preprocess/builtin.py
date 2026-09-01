@@ -11,6 +11,7 @@ from typing import Any
 from .handlers.anndata import AnnDataHandler
 from .handlers.atlas import AtlasHandler
 from .handlers.tahoe import TahoeHandler
+from .handlers.combosciplex import combosciplex as _combosciplex_handler
 
 
 def _roots(storage: str | Path):
@@ -58,6 +59,24 @@ def nips(
     )
 
 
+def combosciplex(
+    *,
+    storage: str | Path = "storage",
+    source: str | Path,
+    **schema: Any,
+):
+    """ComboSciPlex AnnData handler with component-aware conditions."""
+    raw, projects, frozen = _roots(storage)
+    dataset = str(schema.pop("dataset", "ComboSciPlex"))
+    return _combosciplex_handler(
+        source,
+        projects,
+        frozen_models=frozen,
+        dataset=dataset,
+        **schema,
+    )
+
+
 def anndata(
     *,
     dataset: str,
@@ -75,4 +94,4 @@ def anndata(
     )
 
 
-__all__ = ["anndata", "nips", "sciplex", "tahoe"]
+__all__ = ["anndata", "combosciplex", "nips", "sciplex", "tahoe"]

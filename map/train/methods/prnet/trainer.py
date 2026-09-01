@@ -10,11 +10,13 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from ..common import (
     atomic_torch_save,
     build_loaders,
+    EarlyStopping,
     finish_distributed,
     move_batch,
     precision,
     raw_model,
     seed_everything,
+    synchronized_loss,
     setup_distributed,
     write_run_config,
 )
@@ -68,7 +70,7 @@ def _loss(model: PRnet, output: dict, batch: dict, loss_type: str) -> torch.Tens
     return model.loss(output, batch)
 
 
-def _checkpoint(model, optimizer, args, epoch, step) -> dict:
+def _checkpoint(model, optimizer, args, epoch, step, early_stopping=None) -> dict:
     implementation = raw_model(model)
     return {
         "format": "map_method_v2",
@@ -79,6 +81,9 @@ def _checkpoint(model, optimizer, args, epoch, step) -> dict:
         "optimizer_state_dict": optimizer.state_dict(),
         "args": vars(args),
         "model_configuration": implementation.configuration(),
+        "early_stopping": (
+            early_stopping.state_dict() if early_stopping is not None else None
+        ),
     }
 
 
@@ -113,6 +118,9 @@ def train(args) -> None:
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
     start_epoch = global_step = 0
+    early_stopping = EarlyStopping(
+        args.early_stopping_patience, args.early_stopping_min_delta
+    )
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         if checkpoint.get("format") not in {"map_method_v2", "map_baseline_v2"} or checkpoint.get("model") != "prnet":
@@ -121,6 +129,7 @@ def train(args) -> None:
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint["global_step"])
+        early_stopping.load_state_dict(checkpoint.get("early_stopping"))
     if world > 1:
         model = DDP(
             model,
@@ -144,6 +153,7 @@ def train(args) -> None:
         )
 
     last_epoch = max(start_epoch - 1, 0)
+    stop_reason = "max_steps_or_epochs"
     for epoch in range(start_epoch, args.epochs):
         last_epoch = epoch
         training.set_epoch(epoch)
@@ -159,21 +169,30 @@ def train(args) -> None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             global_step += 1
+            stop_requested = early_stopping.update(
+                synchronized_loss(value.detach(), device)
+            )
 
-            if global_step >= args.max_steps:
+            if stop_requested or global_step >= args.max_steps:
+                if stop_requested:
+                    stop_reason = "early_stopping"
                 break
         if rank == 0:
-            payload = _checkpoint(model, optimizer, args, epoch, global_step)
+            payload = _checkpoint(
+                model, optimizer, args, epoch, global_step, early_stopping
+            )
             atomic_torch_save(payload, output / "last.pt")
             if (epoch + 1) % args.checkpoint_every_epochs == 0:
                 atomic_torch_save(
                     payload, output / "checkpoints" / f"epoch_{epoch + 1:04d}.pt"
                 )
-        if global_step >= args.max_steps:
+        if early_stopping.stopped or global_step >= args.max_steps:
             break
     if rank == 0:
         atomic_torch_save(
-            _checkpoint(model, optimizer, args, last_epoch, global_step),
+            _checkpoint(
+                model, optimizer, args, last_epoch, global_step, early_stopping
+            ),
             output / "last.pt",
         )
     finish_distributed()

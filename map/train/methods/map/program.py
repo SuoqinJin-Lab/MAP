@@ -21,6 +21,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from ...._common.dataset import MAPDataset
 from ....model.map import MAPModel
+from ..common import EarlyStopping, synchronized_loss
 
 
 MAP_TRAIN_FIELDS = frozenset({
@@ -47,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-file", required=True)
     parser.add_argument("--train-split", default="train")
     parser.add_argument(
-        "--regime", choices=("unprofiled_drug", "unseen_combination"), required=True
+        "--regime", choices=("unprofiled_drug", "unseen_combination", "combosciplex"), required=True
     )
     parser.add_argument("--populations", nargs="+")
     parser.add_argument("--se-ckpt", required=True)
@@ -60,12 +61,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--set-size", type=int, default=24)
     parser.add_argument("--num-gene-tokens", type=int, default=2048)
     parser.add_argument("--hvg-dim", type=int, default=2000)
+    parser.add_argument("--combination-fusion", choices=("avg_emb", "two_tokens"), default="avg_emb")
+    parser.add_argument("--max-components", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--hvg-loss-weight", type=float, default=0.1)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--max-steps", type=int, default=100_000)
+    parser.add_argument(
+        "--early-stopping-patience", type=int, default=1000,
+        help="Optimizer steps without a new loss minimum; 0 disables it.",
+    )
+    parser.add_argument(
+        "--early-stopping-min-delta", type=float, default=0.0,
+        help="Minimum loss decrease counted as a new minimum.",
+    )
     parser.add_argument("--warmup-steps", type=int, default=10_000)
     parser.add_argument(
         "--scheduler-total-steps",
@@ -140,17 +151,38 @@ def compute_loss(pred_embedding, true_embedding, pred_hvg, true_hvg, hvg_weight)
 
 
 def move_batch(batch: dict, device: torch.device):
-    doses = batch["drug_conc"]
-    if not torch.isfinite(doses).all() or (doses < 0).any():
-        raise ValueError("Drug doses must be finite and non-negative")
+    smiles = batch["component_smiles"] if "component_smiles" in batch else batch["drug_smiles"]
+    doses = batch["component_doses"] if "component_doses" in batch else batch["drug_conc"]
+    if isinstance(doses, torch.Tensor):
+        if not torch.isfinite(doses).all() or (doses < 0).any():
+            raise ValueError("Drug doses must be finite and non-negative")
+        doses = doses.to(device, non_blocking=True, dtype=torch.float32)
+    else:
+        flat_doses = [float(value) for row in doses for value in (row if isinstance(row, (list, tuple)) else [row])]
+        if not flat_doses or not np.isfinite(flat_doses).all() or any(value < 0 for value in flat_doses):
+            raise ValueError("Drug doses must be finite and non-negative")
     return (
         batch["control_gene_ids"].to(device, non_blocking=True),
         batch["control_expressions"].to(device, non_blocking=True),
         batch["condition_embeddings"].to(device, non_blocking=True),
         batch["condition_hvg_vectors"].to(device, non_blocking=True),
-        list(batch["drug_smiles"]),
-        doses.to(device, non_blocking=True, dtype=torch.float32),
+        smiles,
+        doses,
     )
+
+
+def collate_map_batch(samples: list[dict]) -> dict:
+    """Stack tensors while preserving variable-length component lists."""
+    output = {}
+    for key in samples[0]:
+        values = [sample[key] for sample in samples]
+        if key in {"component_smiles", "component_doses", "component_names"}:
+            output[key] = values
+        elif isinstance(values[0], torch.Tensor):
+            output[key] = torch.stack(values)
+        else:
+            output[key] = values
+    return output
 
 
 def compile_map_parts(model: MAPModel, mode: str) -> tuple[str, ...]:
@@ -173,7 +205,9 @@ def compile_map_parts(model: MAPModel, mode: str) -> tuple[str, ...]:
     return MAP_COMPILE_PARTS
 
 
-def checkpoint_payload(model, optimizer, scheduler, scaler, args, epoch, step):
+def checkpoint_payload(
+    model, optimizer, scheduler, scaler, args, epoch, step, early_stopping=None
+):
     raw_model = model.module if isinstance(model, DDP) else model
     return {
         "format": "map_method_4_4_v1",
@@ -184,6 +218,9 @@ def checkpoint_payload(model, optimizer, scheduler, scaler, args, epoch, step):
         "scheduler_state_dict": scheduler.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
         "args": vars(args),
+        "early_stopping": (
+            early_stopping.state_dict() if early_stopping is not None else None
+        ),
     }
 
 
@@ -234,6 +271,10 @@ def main() -> None:
         )
     ):
         raise ValueError("Invalid epochs/max_steps/warmup_steps")
+    if args.early_stopping_patience < 0 or args.early_stopping_min_delta < 0:
+        raise ValueError(
+            "early-stopping-patience and early-stopping-min-delta must be non-negative"
+        )
     output_dir = Path(args.output_dir)
     if output_dir.exists() and any(output_dir.iterdir()) and not args.resume:
         raise FileExistsError(f"Run directory is not empty: {output_dir}")
@@ -271,6 +312,7 @@ def main() -> None:
         "num_workers": args.num_workers,
         "pin_memory": device.type == "cuda",
         "persistent_workers": args.num_workers > 0,
+        "collate_fn": collate_map_batch,
     }
     train_loader = DataLoader(training, sampler=train_sampler, **loader_options)
 
@@ -282,6 +324,8 @@ def main() -> None:
         static_token_cache=args.static_token_cache,
         num_gene_tokens=args.num_gene_tokens,
         hvg_dim=args.hvg_dim,
+        combination_fusion=args.combination_fusion,
+        max_components=args.max_components,
     )
     if device.type == "cuda":
         model.state.to(dtype=amp_dtype)
@@ -317,6 +361,9 @@ def main() -> None:
         device.type,
         enabled=device.type == "cuda" and args.amp_dtype == "fp16",
     )
+    early_stopping = EarlyStopping(
+        args.early_stopping_patience, args.early_stopping_min_delta
+    )
 
     start_epoch = 0
     global_step = 0
@@ -324,6 +371,7 @@ def main() -> None:
         checkpoint = load_checkpoint(args.resume, model, optimizer, scheduler, scaler)
         start_epoch = int(checkpoint["epoch"]) + 1
         global_step = int(checkpoint["global_step"])
+        early_stopping.load_state_dict(checkpoint.get("early_stopping"))
 
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -413,6 +461,9 @@ def main() -> None:
             optimizer.zero_grad(set_to_none=True)
             scheduler.step()
             global_step += 1
+            stop_requested = early_stopping.update(
+                synchronized_loss(loss.detach(), device)
+            )
             if global_step % args.log_every_steps == 0:
                 elapsed = time.perf_counter() - log_started
                 steps = global_step - logged_steps
@@ -442,7 +493,7 @@ def main() -> None:
                 logged_steps = global_step
                 logged_micro_batches = 0
 
-            if global_step >= args.max_steps:
+            if stop_requested or global_step >= args.max_steps:
                 break
 
         if rank == 0:
@@ -450,10 +501,11 @@ def main() -> None:
                 save_checkpoint(
                     output_dir / "checkpoints" / f"epoch_{epoch + 1:04d}.pt",
                     model, optimizer, scheduler, scaler, args, epoch, global_step,
+                    early_stopping,
                 )
         if dist.is_initialized():
             dist.barrier()
-        if global_step >= args.max_steps:
+        if early_stopping.stopped or global_step >= args.max_steps:
             break
 
     if rank == 0:
@@ -466,9 +518,10 @@ def main() -> None:
             args,
             last_epoch,
             global_step,
+            early_stopping,
         )
         print(
-            f"training complete: reason=max_steps_or_epochs, step={global_step}, "
+            f"training complete: reason={'early_stopping' if early_stopping.stopped else 'max_steps_or_epochs'}, step={global_step}, "
             f"checkpoint={output_dir / 'last.pt'}",
             flush=True,
         )

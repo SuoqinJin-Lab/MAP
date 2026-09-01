@@ -10,6 +10,7 @@ from .decoder import LatentToGeneDecoder
 from .molecule import MAPKGEncoder
 from .state import StateEncoder
 from .transformer import map_transformer
+from .._common.components import normalize_batch_components
 
 
 class PerturbationEncoder(nn.Module):
@@ -21,10 +22,21 @@ class PerturbationEncoder(nn.Module):
         static_token_cache: str | Path | None,
         num_gene_tokens: int = 2048,
         hvg_dim: int = 2000,
+        combination_fusion: str = "avg_emb",
+        max_components: int = 2,
     ):
         super().__init__()
         self.dim_emb = 1024
         self.num_gene_tokens = int(num_gene_tokens)
+        self.combination_fusion = str(combination_fusion).casefold()
+        if self.combination_fusion not in {"avg_emb", "two_tokens"}:
+            raise ValueError("combination_fusion must be avg_emb or two_tokens")
+        # ``avg_emb`` consumes any number of components through one fused token;
+        # ``two_tokens`` keeps a fixed-width token block and therefore needs a
+        # padding limit.
+        self.max_components = int(max_components)
+        if self.max_components <= 0:
+            raise ValueError("max_components must be positive")
         self.cell_projector = CellProjector(4, 2048, self.dim_emb, dropout=0.1)
         self.mapkg_encoder = MAPKGEncoder(
             vocab_path=mapkg_vocab,
@@ -36,7 +48,9 @@ class PerturbationEncoder(nn.Module):
         self.gene_tokens_projector = ResidualProjector(
             2048 + self.dim_emb, self.dim_emb, 2048
         )
-        self.transformer_backbone = map_transformer(self.num_gene_tokens, self.dim_emb)
+        self.transformer_backbone = map_transformer(
+            self.num_gene_tokens, self.dim_emb, self.max_components
+        )
         self.project_out = ProjectOut(self.dim_emb, 2048, dropout=0.1)
         self.gene_decoder = LatentToGeneDecoder(2048, hvg_dim, [512, 1024], 0.1)
         self._gene_knowledge_table = None
@@ -85,6 +99,20 @@ class PerturbationEncoder(nn.Module):
         with torch.no_grad():
             return self.mapkg_encoder(smiles).to(dtype=reference.dtype)
 
+    def _component_tokens(self, smiles, doses, reference: torch.Tensor):
+        batch_size = len(smiles) if not isinstance(smiles, str) else 1
+        smile_batch, dose_batch = normalize_batch_components(smiles, doses, batch_size)
+        flat_smiles = [value for row in smile_batch for value in row]
+        encoded = self.encode_drug(flat_smiles, reference)
+        offsets = []
+        cursor = 0
+        for row in smile_batch:
+            offsets.append(encoded[cursor:cursor + len(row)])
+            cursor += len(row)
+        scaled = [tokens * torch.log10(torch.tensor(row_doses, device=reference.device, dtype=reference.dtype) + 1).unsqueeze(-1)
+                  for tokens, row_doses in zip(offsets, dose_batch)]
+        return scaled
+
     def _gene_table(self, esm_embeddings: torch.Tensor) -> torch.Tensor:
         if self._gene_knowledge_table is None or self._gene_knowledge_table.device != esm_embeddings.device:
             if self._cached_gene_knowledge_cpu is not None:
@@ -114,16 +142,40 @@ class PerturbationEncoder(nn.Module):
             raise ValueError("Cell set is not divisible by the condition batch")
         set_size = bulk_cells // batch_size
         cell_tokens = self.cell_projector(cell_embeddings)
-        drug_tokens = self.encode_drug(smiles, cell_embeddings)
+        component_tokens = self._component_tokens(smiles, doses, cell_embeddings)
+        if self.combination_fusion == "avg_emb":
+            drug_tokens = torch.stack([tokens.mean(dim=0) for tokens in component_tokens])
+        else:
+            if any(len(tokens) > self.max_components for tokens in component_tokens):
+                raise ValueError(f"Input has more than max_components={self.max_components}")
         knowledge = torch.nn.functional.embedding(gene_ids.long(), self._gene_table(esm_embeddings))
         fused = self.gene_tokens_projector(torch.cat([gene_tokens, knowledge.to(gene_tokens.dtype)], dim=-1))
-        doses = torch.as_tensor(doses, device=drug_tokens.device, dtype=drug_tokens.dtype).reshape(batch_size)
-        drug_tokens = drug_tokens * torch.log10(doses + 1.0).unsqueeze(-1)
-        drug_tokens = drug_tokens[:, None, :].expand(batch_size, set_size, -1).reshape(bulk_cells, -1)
-        combined = torch.cat([drug_tokens[:, None], cell_tokens[:, None], fused], dim=1)
+        if self.combination_fusion == "avg_emb":
+            drug_tokens = drug_tokens[:, None, :].expand(batch_size, set_size, -1).reshape(bulk_cells, -1)
+            combined = torch.cat([drug_tokens[:, None], cell_tokens[:, None], fused], dim=1)
+            cell_position = 1
+        else:
+            padded = cell_embeddings.new_zeros((batch_size, self.max_components, self.dim_emb))
+            component_mask = torch.zeros(
+                (batch_size, self.max_components), device=cell_embeddings.device,
+                dtype=torch.long,
+            )
+            for index, tokens in enumerate(component_tokens):
+                padded[index, :len(tokens)] = tokens
+                component_mask[index, :len(tokens)] = 1
+            drug_tokens = padded[:, None].expand(batch_size, set_size, -1, -1).reshape(
+                bulk_cells, self.max_components, self.dim_emb
+            )
+            combined = torch.cat([drug_tokens, cell_tokens[:, None], fused], dim=1)
+            cell_position = self.max_components
+            attention_mask = torch.cat([
+                component_mask[:, None].expand(batch_size, set_size, -1).reshape(bulk_cells, self.max_components),
+                torch.ones((bulk_cells, 1 + fused.shape[1]), device=cell_embeddings.device, dtype=torch.long),
+            ], dim=1)
         updated_cell = self.transformer_backbone(
-            inputs_embeds=combined
-        ).last_hidden_state[:, 1]
+            inputs_embeds=combined,
+            attention_mask=attention_mask if self.combination_fusion == "two_tokens" else None,
+        ).last_hidden_state[:, cell_position]
         # Method 4.4 cell-token residual is part of the canonical MAP model.
         cell_update = updated_cell + cell_tokens
         predicted_embeddings = self.project_out(cell_update)
@@ -152,6 +204,8 @@ class MAPModel(nn.Module):
         static_token_cache: str | Path | None,
         num_gene_tokens: int = 2048,
         hvg_dim: int = 2000,
+        combination_fusion: str = "avg_emb",
+        max_components: int = 2,
     ):
         super().__init__()
         self.num_gene_tokens = int(num_gene_tokens)
@@ -162,6 +216,8 @@ class MAPModel(nn.Module):
             static_token_cache=static_token_cache,
             num_gene_tokens=num_gene_tokens,
             hvg_dim=hvg_dim,
+            combination_fusion=combination_fusion,
+            max_components=max_components,
         )
 
     def encode_state(self, gene_ids, expressions, return_gene_tokens=False):

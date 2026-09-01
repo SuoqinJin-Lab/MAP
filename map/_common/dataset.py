@@ -8,6 +8,8 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset
 
+from .components import combination_key, normalize_components
+
 
 class MAPDataset(Dataset):
     """Sample condition cells with controls matched by population and group."""
@@ -43,18 +45,10 @@ class MAPDataset(Dataset):
         sampling_mode: str = "condition_uniform",
     ) -> None:
         self.data_dir = Path(data_dir)
-        # The current materializer records a condition-filter contract.  The
-        # paper release predates that file and intentionally keeps every
-        # eligible condition, so it is a valid input as well.  Keep the
-        # consistency check whenever both sides of the contract are present,
-        # but do not make a paper-compatible data directory manufacture a
-        # no-op filter.
         filter_path = self.data_dir / "condition_filter.json"
-        self.condition_filter = (
-            json.loads(filter_path.read_text(encoding="utf-8"))
-            if filter_path.is_file()
-            else None
-        )
+        if not filter_path.is_file():
+            raise FileNotFoundError(f"Condition filter is missing: {filter_path}")
+        self.condition_filter = json.loads(filter_path.read_text(encoding="utf-8"))
         self.regime = regime
         self.split = split
         self.set_size = int(set_size)
@@ -72,18 +66,22 @@ class MAPDataset(Dataset):
                 "Unknown MAPDataset fields: " + ", ".join(unknown_fields)
             )
         self.epoch = 0
-        self.manifest = json.loads(
-            (self.data_dir / "manifest.json").read_text(encoding="utf-8")
+        manifest_path = self.data_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise FileNotFoundError(
+                f"Prepared manifest is missing: {self.data_dir / 'manifest.json'}"
+            )
+        self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        shapes_path = self.data_dir / "materialized_shapes.json"
+        if not shapes_path.is_file():
+            raise FileNotFoundError(f"Materialized shapes are missing: {shapes_path}")
+        self.materialized_shapes = json.loads(
+            shapes_path.read_text(encoding="utf-8")
         )
         preparation_filter = self.manifest.get("preparation", {}).get(
             "condition_filter", {}
         )
-        if (
-            self.condition_filter is not None
-            and preparation_filter.get("filter_id") is not None
-            and preparation_filter.get("filter_id")
-            != self.condition_filter.get("filter_id")
-        ):
+        if preparation_filter.get("filter_id") != self.condition_filter.get("filter_id"):
             raise RuntimeError("Prepared manifest and condition filter do not match")
         if split_file is None:
             split_file = self.manifest.get("splits", {}).get(regime)
@@ -96,21 +94,9 @@ class MAPDataset(Dataset):
         self.split_manifest = json.loads(split_path.read_text(encoding="utf-8"))
         if self.split_manifest.get("rule", self.split_manifest.get("regime")) != regime:
             raise ValueError("Split rule does not match the requested regime")
-        # ``internal_test``/``external_test`` are MAP's generic names.  The
-        # original paper manifests use ``val``/``test``; map them at the
-        # dataset boundary so training/evaluation code stays dataset agnostic.
-        requested_split = str(split)
-        split_name = requested_split
-        if split_name not in self.split_manifest:
-            aliases = {
-                "internal_test": "val",
-                "external_test": "test",
-                "validation": "val",
-            }
-            split_name = aliases.get(split_name, split_name)
+        split_name = str(split)
         if split_name not in self.split_manifest:
             raise KeyError(f"Split set {split!r} is absent from {split_path}")
-        self.requested_split = requested_split
         self.split_name = split_name
         self.split = split_name
         self.split_id = self.split_manifest.get("split_id", split_path.stem)
@@ -130,6 +116,40 @@ class MAPDataset(Dataset):
             and "cell_line_name" in conditions.columns
         ):
             conditions["population_name"] = conditions["cell_line_name"]
+        # Normalize the optional combination schema in memory.  Legacy
+        # condition tables remain valid and become singleton components.
+        component_smiles = []
+        component_doses = []
+        component_names = []
+        component_keys = []
+        for _, row in conditions.iterrows():
+            raw_smiles = row.get("component_smiles", row.get("canonical_smiles", ""))
+            raw_doses = row.get("component_doses_uM", row.get("dose", 0.0))
+            smiles_values, dose_values = normalize_components(raw_smiles, raw_doses)
+            names = row.get("component_names", None)
+            if isinstance(names, str):
+                try:
+                    import ast
+                    names = ast.literal_eval(names)
+                except (ValueError, SyntaxError):
+                    names = [names]
+            if not isinstance(names, (list, tuple)) or len(names) != len(smiles_values):
+                names = list(smiles_values)
+            component_smiles.append(smiles_values)
+            component_doses.append(dose_values)
+            component_names.append([str(value) for value in names])
+            component_keys.append(str(row.get("combination_key", "")) or combination_key(smiles_values))
+        conditions["component_smiles"] = component_smiles
+        conditions["component_doses_uM"] = component_doses
+        conditions["component_names"] = component_names
+        conditions["combination_key"] = component_keys
+        if "condition_key" not in conditions.columns:
+            conditions["condition_key"] = [
+                f"{population}|{key}|{float(dose):g}"
+                for population, key, dose in zip(
+                    conditions["population"], conditions["combination_key"], conditions["dose"]
+                )
+            ]
         self.conditions = conditions
         self._arrays: dict[str, dict] = {}
         selected = [int(value) for value in self.split_manifest[split_name]]
@@ -181,7 +201,7 @@ class MAPDataset(Dataset):
             )
             if missing_rows:
                 raise ValueError(
-                    f"Split {requested_split!r} has no row membership for condition ids: {missing_rows[:8]}"
+                    f"Split {split_name!r} has no row membership for condition ids: {missing_rows[:8]}"
                 )
         self.condition_sampling_probabilities = None
         if self.training and self.sampling_mode == "cell_abundance":
@@ -211,7 +231,7 @@ class MAPDataset(Dataset):
         if not self.training:
             for condition_id in self.condition_ids:
                 condition = self.conditions.loc[int(condition_id)]
-                key = (str(condition["population"]), str(condition["canonical_smiles"]))
+                key = (str(condition["population"]), str(condition["combination_key"]))
                 evaluation_groups.setdefault(key, []).append(int(condition_id))
         self.evaluation_groups = tuple(
             (key, tuple(values)) for key, values in sorted(evaluation_groups.items())
@@ -229,7 +249,7 @@ class MAPDataset(Dataset):
         if population in self._arrays:
             return self._arrays[population]
         base = self.data_dir / population
-        shape = self.manifest["materialized_shapes"][population]
+        shape = self.materialized_shapes[population]
         n_cells = int(shape["n_cells"])
         token_length = int(shape.get("token_length", 2048))
         hvg_dim = int(shape.get("hvg_dim", 2000))
@@ -390,6 +410,11 @@ class MAPDataset(Dataset):
         sample = {
             "drug_smiles": str(condition["canonical_smiles"]),
             "drug_conc": float(condition["dose"]),
+            "component_smiles": list(condition["component_smiles"]),
+            "component_doses": list(condition["component_doses_uM"]),
+            "component_names": list(condition["component_names"]),
+            "combination_key": str(condition["combination_key"]),
+            "condition_key": str(condition["condition_key"]),
             "population": population,
             "condition_id": condition_id,
         }
@@ -418,7 +443,7 @@ class MAPDataset(Dataset):
         """Sample one pseudobulk for a cell-line/drug pair across all doses."""
         if self.training:
             raise RuntimeError("Evaluation groups are unavailable in training mode")
-        (_, smiles), condition_ids = self.evaluation_groups[int(index)]
+        (_, combination), condition_ids = self.evaluation_groups[int(index)]
         first = self.conditions.loc[int(condition_ids[0])]
         population = str(first["population"])
         arrays = self._open_population(population)
@@ -451,9 +476,14 @@ class MAPDataset(Dataset):
             np.asarray(values, dtype=dtype).copy()
         )
         sample = {
-            "drug_smiles": smiles,
+            "drug_smiles": str(sampled_condition["canonical_smiles"]),
             "drug_conc": float(sampled_condition["dose"]),
             "drug": str(sampled_condition["drug"]),
+            "component_smiles": list(sampled_condition["component_smiles"]),
+            "component_doses": list(sampled_condition["component_doses_uM"]),
+            "component_names": list(sampled_condition["component_names"]),
+            "combination_key": str(combination),
+            "condition_key": str(sampled_condition["condition_key"]),
             "population": population,
             "condition_id": sampled_condition_id,
             "condition_ids": condition_ids,

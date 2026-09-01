@@ -4,6 +4,7 @@ import json
 import os
 import random
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -83,6 +84,77 @@ def precision(device: torch.device, amp_dtype: str):
     if amp_dtype == "bf16" and device.type == "cuda":
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     return nullcontext()
+
+
+@dataclass
+class EarlyStopping:
+    """Step-based early stopping shared by every iterative method.
+
+    ``patience`` counts optimizer updates, rather than epochs.  A strict new
+    low point is required when ``min_delta`` is zero, matching the paper's
+    "stop after 1,000 steps without a new loss minimum" rule.  A patience of
+    zero explicitly disables the criterion.
+    """
+
+    patience: int = 1000
+    min_delta: float = 0.0
+    best_loss: float | None = None
+    bad_steps: int = 0
+    stopped: bool = False
+
+    def __post_init__(self) -> None:
+        self.patience = int(self.patience)
+        self.min_delta = float(self.min_delta)
+        if self.patience < 0:
+            raise ValueError("early_stopping_patience must be non-negative")
+        if self.min_delta < 0:
+            raise ValueError("early_stopping_min_delta must be non-negative")
+
+    @property
+    def enabled(self) -> bool:
+        return self.patience > 0
+
+    def update(self, loss: float) -> bool:
+        """Record one optimizer-step loss and return whether training stops."""
+        value = float(loss)
+        improved = (
+            self.best_loss is None
+            or (value == value and value < self.best_loss - self.min_delta)
+        )
+        if improved:
+            self.best_loss = value
+            self.bad_steps = 0
+        else:
+            self.bad_steps += 1
+        self.stopped = self.enabled and self.bad_steps >= self.patience
+        return self.stopped
+
+    def state_dict(self) -> dict[str, object]:
+        return {
+            "patience": self.patience,
+            "min_delta": self.min_delta,
+            "best_loss": self.best_loss,
+            "bad_steps": self.bad_steps,
+            "stopped": self.stopped,
+        }
+
+    def load_state_dict(self, state: dict[str, object] | None) -> None:
+        if not state:
+            return
+        self.best_loss = (
+            None if state.get("best_loss") is None else float(state["best_loss"])
+        )
+        self.bad_steps = int(state.get("bad_steps", 0))
+        self.stopped = bool(state.get("stopped", False))
+
+
+def synchronized_loss(loss: torch.Tensor | float, device: torch.device) -> float:
+    """Return the mean loss across ranks for a deterministic stop decision."""
+    value = torch.as_tensor(float(loss), dtype=torch.float64, device=device)
+    if dist.is_initialized():
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        value /= dist.get_world_size()
+    return float(value.item())
 
 
 def seed_everything(seed: int, rank: int = 0) -> None:
@@ -177,11 +249,13 @@ __all__ = [
     "MethodAssets",
     "atomic_torch_save",
     "build_loaders",
+    "EarlyStopping",
     "finish_distributed",
     "move_batch",
     "precision",
     "raw_model",
     "seed_everything",
+    "synchronized_loss",
     "setup_distributed",
     "write_run_config",
 ]
