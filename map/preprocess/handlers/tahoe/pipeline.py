@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 import torch
 
 from ...._common.hvg import hvg_fingerprint
+from .constants import CONTROL_NAMES
 
 
 CELL_LINES = (
@@ -73,8 +74,10 @@ def _parse_drug_dose(value: str, fallback_drug: str) -> tuple[str, float, str]:
         parsed = ast.literal_eval(value)
         drug, dose, unit = parsed[0]
         return _canonical_drug(drug), float(dose), str(unit).strip()
-    except Exception:
-        return _canonical_drug(fallback_drug), float("nan"), "uM"
+    except Exception as exc:
+        raise ValueError(
+            f"Malformed Tahoe drug/dose entry {value!r}: {exc}"
+        ) from exc
 
 
 def _condition_key(cell_line, drug, dose, unit, smiles):
@@ -310,7 +313,10 @@ def _scan_filter_chunk(args):
                 drug, dose, unit = sample_map.get(
                     str(sample), (fallback, float("nan"), "uM")
                 )
-                is_control = drug == CONTROL_DRUG or fallback == CONTROL_DRUG
+                is_control = (
+                    str(drug).casefold() in CONTROL_NAMES
+                    or str(fallback).casefold() in CONTROL_NAMES
+                )
                 valid_smiles = smiles is not None and str(smiles).strip() not in {
                     "", "nan", "None"
                 }
@@ -613,7 +619,10 @@ def _scan_stats_chunk(args):
             ):
                 fallback = _canonical_drug(raw_drug)
                 drug, dose, unit = sample_map.get(str(sample), (fallback, float("nan"), "uM"))
-                is_control = drug == CONTROL_DRUG or fallback == CONTROL_DRUG
+                is_control = (
+                    str(drug).casefold() in CONTROL_NAMES
+                    or str(fallback).casefold() in CONTROL_NAMES
+                )
                 valid_smiles = smiles is not None and str(smiles).strip() not in {"", "nan", "None"}
                 if not is_control and (not valid_smiles or not math.isfinite(dose)):
                     excluded_missing_smiles += 1
@@ -1009,7 +1018,10 @@ def _scan_clipped_chunk(task):
                 drug, dose, unit = sample_map.get(
                     str(sample), (fallback, float("nan"), "uM")
                 )
-                is_control = drug == CONTROL_DRUG or fallback == CONTROL_DRUG
+                is_control = (
+                    str(drug).casefold() in CONTROL_NAMES
+                    or str(fallback).casefold() in CONTROL_NAMES
+                )
                 valid_smiles = smiles is not None and str(smiles).strip() not in {
                     "", "nan", "None"
                 }
@@ -1411,7 +1423,10 @@ def _materialize_chunk(task):
                 cell_index = cell_to_index[cell_line]
                 fallback = _canonical_drug(raw_drug)
                 drug, dose, unit = sample_map.get(str(sample), (fallback, float("nan"), "uM"))
-                is_control = drug == CONTROL_DRUG or fallback == CONTROL_DRUG
+                is_control = (
+                    str(drug).casefold() in CONTROL_NAMES
+                    or str(fallback).casefold() in CONTROL_NAMES
+                )
                 valid_smiles = smiles is not None and str(smiles).strip() not in {"", "nan", "None"}
                 if not is_control and (not valid_smiles or not math.isfinite(dose)):
                     continue

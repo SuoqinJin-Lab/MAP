@@ -11,6 +11,7 @@ from ...._common.feedback import Feedback, StageResult
 from ...._common.identifiers import training_identifier
 from ...._common.paths import DatasetPaths
 from ...._common.runner import run_command
+from ...._common.runtime import validate_resume
 from ....preparation.validate import validate_method
 from ...splits import resolve_split
 
@@ -134,28 +135,19 @@ def train_map(
         if not resume_path.is_file():
             raise FileNotFoundError(resume_path)
         checkpoint = torch.load(resume_path, map_location="cpu", weights_only=False)
-        previous = checkpoint.get("args", {})
-        allowed_changes = {"resume", "output_dir"}
-        if allow_resource_change_on_resume:
-            allowed_changes.update({"num_workers", "compile_mode"})
         current = {
             **params,
             "data_dir": str(paths.prepared),
             "regime": regime,
             "split_file": str(split_path),
             "train_split": train_split,
-            "populations": list(populations) if populations else previous.get("populations", list(shapes)),
+            "populations": list(populations) if populations else (checkpoint.get("args", {}).get("populations") or list(shapes)),
         }
-        incompatible = {
-            key: {"checkpoint": previous.get(key), "requested": value}
-            for key, value in current.items()
-            if key in previous and key not in allowed_changes and previous.get(key) != value
-        }
-        if incompatible:
-            raise ValueError(
-                "Resume configuration changes experiment semantics: "
-                + json.dumps(incompatible, sort_keys=True, default=str)
-            )
+        validate_resume(
+            checkpoint,
+            current,
+            allow_resource_change=allow_resource_change_on_resume,
+        )
     report = Feedback(paths.method_dir(split_id, "map"), f"train_{run_id}")
     module_command = [
         sys.executable,

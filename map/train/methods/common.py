@@ -59,10 +59,16 @@ class MethodAssets:
 
     def file(self, filename: str) -> Path:
         """Resolve one file across the artifact directories in this view."""
-        return next(
-            (root / filename for root in self._roots if (root / filename).exists()),
-            self.root / filename,
-        )
+        for root in self._roots:
+            path = root / filename
+            if path.exists():
+                return path
+        path = self.root / filename
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{self.manifest.get('model', 'method')} asset is missing: {path}"
+            )
+        return path
 
 
 def setup_distributed() -> tuple[int, int, int, torch.device]:

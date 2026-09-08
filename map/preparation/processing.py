@@ -15,10 +15,8 @@ from .._common.paths import DatasetPaths
 # remains available as an explicit preset; generic datasets default to seeded
 # selection unless callers pass this panel through ``external_drugs``.
 PAPER_UNPROFILED_DRUGS = (
-    "BI-78D3",
     "Balsalazide (sodium hydrate)",
     "Bergenin",
-    "Bortezomib",
     "Brivudine",
     "CP21R7",
     "Carbidopa (monohydrate)",

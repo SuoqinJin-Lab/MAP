@@ -4,10 +4,13 @@ import json
 import sys
 from pathlib import Path
 
+import torch
+
 from ..._common.feedback import Feedback
 from ..._common.identifiers import config_digest, training_identifier
 from ..._common.paths import DatasetPaths
 from ..._common.runner import run_command
+from ..._common.runtime import validate_resume
 from ...preparation.validate import validate_method
 from ..splits import resolve_split
 from .registry import METHOD_REGISTRY
@@ -195,6 +198,7 @@ def train_method(
     run_name=None,
     resume=None,
     populations=None,
+    allow_resource_change_on_resume: bool = True,
     dry_run=False,
     **overrides,
 ):
@@ -246,6 +250,20 @@ def train_method(
         raise FileExistsError(f"Run directory is not empty: {output}")
     if resume is not None and not Path(resume).is_file():
         raise FileNotFoundError(resume)
+    if resume is not None and not dry_run:
+        checkpoint = torch.load(Path(resume), map_location="cpu", weights_only=False)
+        validate_resume(
+            checkpoint,
+            {
+                **params,
+                "data_dir": str(paths.prepared),
+                "regime": regime,
+                "split_file": str(split_path),
+                "train_split": train_split,
+                "populations": list(selected_populations),
+            },
+            allow_resource_change=allow_resource_change_on_resume,
+        )
 
     module_command = [
         sys.executable,

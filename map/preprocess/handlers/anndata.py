@@ -141,9 +141,16 @@ class AnnDataHandler:
         populations = Counter(population_values)
         perturbations = [str(value) for value in obs[columns["perturbation"]]]
         control_mask = np.asarray([value.casefold() in self.control_values for value in perturbations])
-        doses = (
-            np.asarray([_number(value) for value in obs[columns["dose"]]], dtype=np.float64)
-            if columns["dose"] else np.zeros(data.n_obs, dtype=np.float64)
+        if columns["dose"] is None:
+            raise ValueError(
+                "AnnData source has no dose column; set dose_key before watching data"
+            )
+        doses = np.asarray(
+            [_number(value) for value in obs[columns["dose"]]], dtype=np.float64
+        )
+        smiles_values = (
+            [str(value) for value in obs[columns["smiles"]]]
+            if columns["smiles"] else [""] * data.n_obs
         )
         noncontrol = np.flatnonzero(~control_mask)
         conditions = {
@@ -151,6 +158,8 @@ class AnnDataHandler:
                 population_values[index],
                 perturbations[index],
                 float(doses[index]),
+                self.dose_unit,
+                smiles_values[index],
             )
             for index in noncontrol
         }

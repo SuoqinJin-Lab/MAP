@@ -60,10 +60,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--evaluation-unit",
         choices=("dose_level_condition", "cell_line_drug", "cell_line_combination"),
-        default="cell_line_drug",
+        default="dose_level_condition",
         help=(
-            "Primary paper protocol evaluates each cell-line/drug/dose "
-            "condition; cell_line_drug additionally reports dose-collapsed results"
+            "Default protocol evaluates each cell-line/drug/dose condition "
+            "atomically and reports three rollups (cell line, drug, dose); "
+            "cell_line_drug instead reports dose-collapsed results"
         ),
     )
     parser.add_argument("--num-gene-tokens", type=int, default=2048)
@@ -309,7 +310,17 @@ def _summarize_records(records, components, elapsed: float, peak_memory_gb: floa
         all_control.append(record["control"])
         too_few_degs += int(record["too_few_degs"])
     if not records:
-        raise ValueError("The selected evaluation split contains no conditions")
+        # A split may legitimately contribute zero conditions (e.g. an
+        # internal test with a 0 % held-out fraction).  Report an empty,
+        # shape-compatible summary instead of failing the whole evaluation.
+        return {
+            "n_conditions": 0,
+            "n_conditions_with_fewer_than_top_k_significant_degs": 0,
+            "evaluation_seconds": float(elapsed),
+            "computational_efficiency": 0.0,
+            "evaluation_efficiency": 0.0,
+            "peak_gpu_memory_gb": float(peak_memory_gb),
+        }
     predicted_matrix = np.stack(all_predicted)
     observed_matrix = np.stack(all_observed)
     control_matrix = np.stack(all_control)
@@ -845,6 +856,27 @@ def main() -> None:
             summary.to_csv(split_output / filename, index=False)
             split_payload[f"{label}_per_drug_metrics"] = summary.to_dict("records")
             split_payload[f"{label}_per_drug_mean"] = mean_row
+        if dose_condition_metric_rows:
+            # Cell-line rollup: mean of the atomic dose-level condition metrics
+            # within each population, averaged over evaluation seeds.
+            cell_line_frame = pd.DataFrame(dose_condition_metric_rows)
+            numeric = [
+                column for column in cell_line_frame.select_dtypes(
+                    include=[np.number]
+                ).columns
+                if column != "seed"
+            ]
+            cell_line_summary = cell_line_frame.groupby(
+                "population", sort=True
+            )[numeric].mean()
+            cell_line_summary["n_seeds"] = (
+                cell_line_frame.groupby("population")["seed"].nunique()
+            )
+            cell_line_summary = cell_line_summary.reset_index()
+            cell_line_summary.to_csv(
+                split_output / "per_cell_line_metrics.csv", index=False
+            )
+            split_payload["per_cell_line_metrics"] = cell_line_summary.to_dict("records")
         (split_output / "evaluation.json").write_text(
             json.dumps(split_payload, indent=2, sort_keys=True), encoding="utf-8"
         )
@@ -874,6 +906,9 @@ def main() -> None:
                 str((split_output / "per_drug_metrics.csv").resolve())
                 if "per_drug_metrics" in split_payload else None
             ),
+            "per_cell_line_metrics_file": str(
+                (split_output / "per_cell_line_metrics.csv").resolve()
+            ) if (split_output / "per_cell_line_metrics.csv").is_file() else None,
         }
     root_payload = {
         **common_payload,
