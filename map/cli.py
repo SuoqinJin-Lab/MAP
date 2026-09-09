@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from . import eval, preparation, preprocess, train
+from ._common import splits
 
 
 def _size(value: str) -> int | float:
@@ -47,7 +48,6 @@ def _experiment_paths(args, *, frozen=None):
         Path(args.storage) / "projects" / args.project_name,
         frozen_root,
     )
-
 
 def _preprocess_flow(args):
     options = {}
@@ -107,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--workers", type=int, default=8)
     split = commands.add_parser("create-split")
     _project(split)
-    split.add_argument("--rule", choices=("unprofiled_drug", "unseen_combination", "combosciplex"), required=True)
+    split.add_argument("--rule", choices=splits.TRAIN_RULES, required=True)
     split.add_argument("--external-test-size", type=_size, required=True)
     split.add_argument("--internal-test-fraction", type=float, default=0.2)
     split.add_argument(

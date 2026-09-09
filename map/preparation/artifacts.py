@@ -13,6 +13,7 @@ from rdkit.Chem import rdFingerprintGenerator
 from .._common.feedback import Feedback
 from .._common.hvg import load_hvg_contract
 from .._common.paths import DatasetPaths
+from .._common.splits import MOA_SPLIT_RULES
 from .networks import (
     UNIMOL_CHECKPOINT,
     UNIMOL_DICTIONARY,
@@ -614,7 +615,7 @@ def prepare_moa_features(
     if not split_path.is_file():
         raise FileNotFoundError(split_path)
     split = json.loads(split_path.read_text(encoding="utf-8"))
-    if split.get("rule") not in {"unseen_combination", "combosciplex"}:
+    if split.get("rule") not in MOA_SPLIT_RULES:
         raise ValueError("MoA features require an unseen_combination or combosciplex split")
     split_id = str(split.get("split_id", split_path.parent.name))
     if split_path.resolve() != paths.split_file(split_id).resolve():

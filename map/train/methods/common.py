@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
 from ..._common.dataset import MAPDataset
+from .registry import method_spec
 
 
 class MethodAssets:
@@ -27,13 +28,8 @@ class MethodAssets:
         if material_dir is None:
             raise ValueError(f"{model} requires the prepared artifact root")
         self.root = Path(material_dir)
-        artifact_dirs = {
-            "chemcpa": ("drug_ecfp4",),
-            "prnet": ("drug_fcfp4",),
-            "crisp": ("drug_rdkit2d", "control_means", "deg_masks"),
-            "cmonge": ("drug_moa", "drug_rdkit2d"),
-            "xpert": ("graph_assets", "drug_unimol", "expression_bins"),
-        }.get(str(model).casefold(), ())
+        spec = method_spec(model)
+        artifact_dirs = spec.artifacts + spec.split_artifacts
         roots = [self.root] if (self.root / "manifest.json").is_file() else [
             self.root / name for name in artifact_dirs
             if (self.root / name / "manifest.json").is_file()
@@ -397,13 +393,14 @@ def apply_resume_state(
     checkpoint: dict,
     *,
     load_scheduler: bool = True,
-    extra_early_stopping=None,
 ) -> tuple[int, int]:
     """Restore optimizer/scheduler/early-stopping state from a checkpoint.
 
     Returns the ``(start_epoch, global_step)`` continuation point.  The
     checkpoint itself has already been validated by
-    :func:`validate_resume_checkpoint`.
+    :func:`validate_resume_checkpoint`.  Method-specific extra state (for
+    example CMonge's autoencoder early-stopping) is restored by the caller
+    from the same ``extra`` keys it wrote via :func:`build_checkpoint`.
     """
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
     if optimizer is not None and "optimizer_state_dict" in checkpoint:
@@ -411,10 +408,6 @@ def apply_resume_state(
     if scheduler is not None and load_scheduler and "scheduler_state_dict" in checkpoint:
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
     early_stopping.load_state_dict(checkpoint.get("early_stopping"))
-    if extra_early_stopping is not None:
-        extra_early_stopping.load_state_dict(
-            checkpoint.get("autoencoder_early_stopping")
-        )
     return int(checkpoint["epoch"]) + 1, int(checkpoint["global_step"])
 
 

@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 import torch
 
 from .._common.dataset import MAPDataset
+from .._common.splits import EVAL_REGIMES
 from ..model.map import MAPModel
 from ..train.methods.registry import METHOD_REGISTRY, load_model
 from ..train.methods.crisp.trainer import CRISPDataset
@@ -29,6 +30,16 @@ from .metrics import (
     significant_deg_mask,
     summarize_runs,
 )
+
+
+# Evaluation units: how dose-level atomic conditions are rolled up.
+#   deg_grouped: DEG discovery pools all doses of a cell-line/drug (vs per
+#                condition); merged: the dose-collapsed result is primary.
+EVAL_UNITS = {
+    "dose_level_condition": {"merged": False, "deg_grouped": False},
+    "cell_line_drug": {"merged": True, "deg_grouped": True},
+    "cell_line_combination": {"merged": True, "deg_grouped": True},
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -46,7 +57,7 @@ def parse_args() -> argparse.Namespace:
         default=["internal_test", "external_test"],
     )
     parser.add_argument(
-        "--regime", choices=("unprofiled_drug", "unseen_combination", "combosciplex"), required=True
+        "--regime", choices=EVAL_REGIMES, required=True
     )
     parser.add_argument("--se-ckpt")
     parser.add_argument("--esm-embeddings")
@@ -59,7 +70,7 @@ def parse_args() -> argparse.Namespace:
                         help="Cells sampled for each cell-line/drug pseudobulk")
     parser.add_argument(
         "--evaluation-unit",
-        choices=("dose_level_condition", "cell_line_drug", "cell_line_combination"),
+        choices=tuple(EVAL_UNITS),
         default="dose_level_condition",
         help=(
             "Default protocol evaluates each cell-line/drug/dose condition "
@@ -482,7 +493,7 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
             raise ValueError(
                 f"Condition {condition_id} has no cells in evaluation split"
             )
-        if args.evaluation_unit == "dose_level_condition":
+        if not EVAL_UNITS[args.evaluation_unit]["deg_grouped"]:
             # DEG discovery follows Method 4.5.2: all cell-level rows for
             # this condition (or the explicitly selected split rows), not the
             # 24 cells sampled for the model input.
@@ -577,10 +588,10 @@ def evaluate_seed(model, args, evaluation_split: str, seed: int, device, compone
         )
         for drug in sorted({record["drug"] for record in merged_records})
     }
-    primary = merged_result if args.evaluation_unit in {"cell_line_drug", "cell_line_combination"} else dose_result
+    primary = merged_result if EVAL_UNITS[args.evaluation_unit]["merged"] else dose_result
     primary_per_drug = (
         merged_per_drug
-        if args.evaluation_unit in {"cell_line_drug", "cell_line_combination"}
+        if EVAL_UNITS[args.evaluation_unit]["merged"]
         else dose_per_drug
     )
     return primary, prediction_rows, dataset, primary_per_drug, {

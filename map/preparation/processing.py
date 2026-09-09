@@ -9,6 +9,7 @@ import pandas as pd
 from .._common.feedback import Feedback, StageResult
 from .._common.identifiers import split_identifier
 from .._common.paths import DatasetPaths
+from .._common.splits import ALL_RULE, GENERATE_RULES
 
 
 # The published validation protocol used this fixed external-drug panel.  It
@@ -428,7 +429,7 @@ def build_condition_index(
 
 def generate_splits(
     paths: DatasetPaths,
-    rule: str = "all",
+    rule: str = ALL_RULE,
     external_test_size: int | float | None = None,
     internal_test_fraction: float = 0.2,
     seed: int = 42,
@@ -442,7 +443,7 @@ def generate_splits(
     external_drugs: list[str] | tuple[str, ...] | None = None,
 ) -> StageResult:
     """Generate one identified generalization split."""
-    if rule not in {"all", "unprofiled_drug", "unseen_combination", "combosciplex"}:
+    if rule not in GENERATE_RULES:
         raise ValueError(f"Unknown split rule: {rule}")
     internal_test_fraction = float(internal_test_fraction)
     if not np.isfinite(internal_test_fraction) or not 0 <= internal_test_fraction < 1:
@@ -472,10 +473,10 @@ def generate_splits(
 
     split_specs: dict[str, dict] = {}
     effective_external_drugs = None if external_drugs is None else list(external_drugs)
-    if rule in {"all", "unprofiled_drug"}:
+    if rule in {ALL_RULE, "unprofiled_drug"}:
         effective_external = (
             unprofiled_external_test_size
-            if external_test_size is None or rule == "all"
+            if external_test_size is None or rule == ALL_RULE
             else external_test_size
         )
         split_id = split_identifier(
@@ -486,16 +487,16 @@ def generate_splits(
             "split_id": split_id,
             "external_test_size": (
                 unprofiled_external_test_size
-                if external_test_size is None or rule == "all"
+                if external_test_size is None or rule == ALL_RULE
                 else external_test_size
             ),
             "external_drugs": effective_external_drugs,
             "filename": "split.json",
         }
-    if rule in {"all", "unseen_combination"}:
+    if rule in {ALL_RULE, "unseen_combination"}:
         effective_external = (
             combination_external_test_size
-            if external_test_size is None or rule == "all"
+            if external_test_size is None or rule == ALL_RULE
             else external_test_size
         )
         split_id = split_identifier(
@@ -510,14 +511,14 @@ def generate_splits(
             "external_test_size": effective_external,
             "filename": "split.json",
         }
-    if rule in {"all", "combosciplex"}:
+    if rule in {ALL_RULE, "combosciplex"}:
         split_id = split_identifier("combosciplex", 0.0 + combination_external_test_size, internal_test_fraction, seed)
         split_specs["combosciplex"] = {
             "split_id": split_id, "external_test_size": combination_external_test_size,
             "filename": "split.json",
         }
     if output_name is not None:
-        if rule == "all":
+        if rule == ALL_RULE:
             raise ValueError("output_name is only valid when generating one split rule")
         if Path(output_name).name != output_name:
             raise ValueError("output_name must be a split_id, not a path")

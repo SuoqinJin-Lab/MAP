@@ -250,8 +250,12 @@ def train(args) -> None:
     if checkpoint is not None:
         start_epoch, global_step = apply_resume_state(
             model, optimizer, scheduler, early_stopping, checkpoint,
-            extra_early_stopping=autoencoder_early_stopping,
         )
+        # Method-specific extra state (written via build_checkpoint(extra=...)).
+        if "autoencoder_early_stopping" in checkpoint:
+            autoencoder_early_stopping.load_state_dict(
+                checkpoint["autoencoder_early_stopping"]
+            )
         if "scheduler_state_dict" not in checkpoint:
             scheduler.step(global_step)
     model = wrap_ddp(
