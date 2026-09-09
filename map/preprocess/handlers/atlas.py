@@ -758,17 +758,7 @@ class AtlasHandler:
         Feedback(workspace, "fetch_population").finish(
             selection_payload, [selection_file, condition_file]
         )
-        selection.reserve_project(project_name)
         return selection
-
-    def fetch_cell_line(
-        self,
-        populations: Sequence[str],
-        *,
-        project_name: str,
-    ) -> DataSelection:
-        """Population-neutral alias for cell-line based datasets."""
-        return self.fetch_populations(populations, project_name=project_name)
 
 
 __all__ = ["AtlasHandler"]

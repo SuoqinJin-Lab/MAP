@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 
 from ..._common.feedback import Feedback
-from ..selection import DataSelection, selection_identifier
+from ..selection import DataSelection, selection_workspace
 
 
 def _require_anndata():
@@ -186,18 +186,6 @@ class AnnDataHandler:
             data.file.close()
         return summary
 
-    def _selection_workspace(
-        self, populations: Sequence[str], project_name: str | None = None
-    ) -> Path:
-        selection_id = (
-            DataSelection._project_name(project_name)
-            if project_name is not None
-            else selection_identifier(
-                self.dataset, self.source, tuple(str(value) for value in populations)
-            )
-        )
-        return self.projects / selection_id
-
     def fetch_cell_line(
         self, cell_lines: Sequence[str], *, project_name: str | None = None
     ) -> DataSelection:
@@ -214,20 +202,15 @@ class AnnDataHandler:
             "cells_by_population": {value: int(available[value]) for value in requested},
             "cells": int(sum(available[value] for value in requested)),
         }
-        workspace = self._selection_workspace(requested, project_name=project_name)
+        workspace = selection_workspace(
+            self.dataset, self.source, self.projects, requested,
+            project_name=project_name,
+        )
         path = workspace / "selection.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         Feedback(path.parent, "fetch_cell_line").finish(payload, [path])
         return self._selection(payload["populations"], path, workspace)
-
-    def fetch_populations(
-        self,
-        populations: Sequence[str],
-        *,
-        project_name: str,
-    ) -> DataSelection:
-        return self.fetch_cell_line(populations, project_name=project_name)
 
     def prepare(self) -> DataSelection:
         """Select every population in the source."""

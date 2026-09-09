@@ -4,7 +4,7 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from .._common.contracts import load_contract, write_contract
 from .._common.feedback import Feedback
@@ -23,6 +23,30 @@ def selection_identifier(
         "populations": list(populations),
     }
     return f"selection-{config_digest(payload, 12)}"
+
+
+def selection_workspace(
+    dataset: str,
+    source: str | Path,
+    projects: str | Path,
+    populations: Sequence[str],
+    *,
+    project_name: str | None = None,
+) -> Path:
+    """Resolve the project directory for a population selection.
+
+    Shared by every handler: a named project maps to ``projects/<name>``,
+    otherwise a content-addressed ``selection-<digest>`` directory is used.
+    """
+    projects = Path(projects)
+    selection_id = (
+        DataSelection._project_name(project_name)
+        if project_name is not None
+        else selection_identifier(
+            dataset, source, tuple(str(value) for value in populations)
+        )
+    )
+    return projects / selection_id
 
 
 @dataclass(frozen=True)
@@ -186,4 +210,4 @@ class DataSelection:
         return paths
 
 
-__all__ = ["DataSelection", "selection_identifier"]
+__all__ = ["DataSelection", "selection_identifier", "selection_workspace"]

@@ -61,7 +61,8 @@ class PreprocessPipeline:
         method = getattr(self.handler, "fetch_populations", None)
         if method is None:
             method = getattr(self.handler, "fetch_cell_line")
-        return method(populations, project_name=project_name, **kwargs)
+        selection = method(populations, project_name=project_name, **kwargs)
+        return self._bind_project(selection, project_name)
 
     def fetch_cell_line(
         self, populations: Sequence[str], *, project_name: str, **kwargs: Any
@@ -70,6 +71,22 @@ class PreprocessPipeline:
         return self.fetch_populations(
             populations, project_name=project_name, **kwargs
         )
+
+    @staticmethod
+    def _bind_project(
+        selection: DataSelection, project_name: str | None
+    ) -> DataSelection:
+        """Persist a fetched selection as a MAP project contract.
+
+        Project binding is handler-independent: every handler fetch returns
+        the same ``DataSelection`` contract, so reserve/create happen once
+        here instead of being duplicated (or forgotten) inside each handler.
+        ``create_project`` is idempotent and also emits ``contract.json``,
+        which ``experiment_paths`` requires in the preparation stage.
+        """
+        if project_name:
+            selection.create_project(project_name)
+        return selection
 
     def open_project(self, project_name: str) -> DataSelection:
         method = getattr(self.handler, "open_project", None)
