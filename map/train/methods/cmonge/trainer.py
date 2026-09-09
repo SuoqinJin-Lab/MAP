@@ -1,24 +1,28 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ..common import (
+    apply_resume_state,
     atomic_torch_save,
+    build_checkpoint,
     build_loaders,
     EarlyStopping,
     finish_distributed,
+    load_hvg_dim,
     move_batch,
     precision,
     raw_model,
+    save_epoch_checkpoint,
     seed_everything,
     synchronized_loss,
     setup_distributed,
-    write_run_config,
+    validate_resume_checkpoint,
+    wrap_ddp,
+    write_method_config,
 )
 from .model import CMonge
 from ..utils import method_data_fields
@@ -159,24 +163,17 @@ def _pretrain_autoencoder(
 
 
 def _checkpoint(model, optimizer, scheduler, args, epoch, step, early_stopping=None, autoencoder_early_stopping=None) -> dict:
-    implementation = raw_model(model)
-    return {
-        "format": "map_method_v2",
-        "model": "cmonge",
-        "epoch": int(epoch),
-        "global_step": int(step),
-        "autoencoder_pretrained": True,
-        "model_state_dict": implementation.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "args": vars(args),
-        "model_configuration": implementation.configuration(),
-        "early_stopping": early_stopping.state_dict() if early_stopping is not None else None,
-        "autoencoder_early_stopping": (
-            autoencoder_early_stopping.state_dict()
-            if autoencoder_early_stopping is not None else None
-        ),
-    }
+    return build_checkpoint(
+        model_name="cmonge", model=model, epoch=epoch, step=step, args=args,
+        optimizer=optimizer, scheduler=scheduler, early_stopping=early_stopping,
+        extra={
+            "autoencoder_pretrained": True,
+            "autoencoder_early_stopping": (
+                autoencoder_early_stopping.state_dict()
+                if autoencoder_early_stopping is not None else None
+            ),
+        },
+    )
 
 
 def train(args) -> None:
@@ -204,14 +201,7 @@ def train(args) -> None:
         raise ValueError("Invalid AE warmup or end learning rate")
     if min(args.weight_decay, args.ae_weight_decay, args.monge_gap_weight) < 0:
         raise ValueError("CMonge regularization values must be non-negative")
-    shapes = json.loads((Path(args.data_dir) / "materialized_shapes.json").read_text())
-    hvg_dimensions = {int(value["hvg_dim"]) for value in shapes.values()}
-    if hvg_dimensions != {2000}:
-        raise ValueError(
-            "CMonge requires exactly 2000 HVGs; "
-            f"materialized dimensions={sorted(hvg_dimensions)}"
-        )
-    hvg_dim = 2000
+    hvg_dim = load_hvg_dim(args.data_dir, required=2000)
     rank, world, local, device = setup_distributed()
     seed_everything(args.seed, rank)
     training, train_sampler, train_loader = build_loaders(
@@ -230,21 +220,13 @@ def train(args) -> None:
     checkpoint = None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        if checkpoint.get("format") not in {"map_method_v2", "map_baseline_v2"} or checkpoint.get("model") != "cmonge":
-            raise ValueError("Resume checkpoint is not a CMonge checkpoint")
+        validate_resume_checkpoint(checkpoint, "cmonge")
         model.load_state_dict(checkpoint["model_state_dict"], strict=True)
 
     if checkpoint is None:
-        ae_model = (
-            DDP(
-                model,
-                device_ids=[local],
-                output_device=local,
-                gradient_as_bucket_view=True,
-                static_graph=True,
-            )
-            if world > 1
-            else model
+        ae_model = wrap_ddp(
+            model, local=local, world=world,
+            gradient_as_bucket_view=True, static_graph=True,
         )
         _pretrain_autoencoder(
             ae_model, train_loader, train_sampler, training, args, device,
@@ -266,37 +248,24 @@ def train(args) -> None:
         optimizer, total_steps, args.transport_lr_min_ratio
     )
     if checkpoint is not None:
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        start_epoch = int(checkpoint["epoch"]) + 1
-        global_step = int(checkpoint["global_step"])
-        early_stopping.load_state_dict(checkpoint.get("early_stopping"))
-        autoencoder_early_stopping.load_state_dict(
-            checkpoint.get("autoencoder_early_stopping")
+        start_epoch, global_step = apply_resume_state(
+            model, optimizer, scheduler, early_stopping, checkpoint,
+            extra_early_stopping=autoencoder_early_stopping,
         )
-        if "scheduler_state_dict" in checkpoint:
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        else:
+        if "scheduler_state_dict" not in checkpoint:
             scheduler.step(global_step)
-    if world > 1:
-        model = DDP(
-            model,
-            device_ids=[local],
-            output_device=local,
-            broadcast_buffers=False,
-            gradient_as_bucket_view=True,
-            static_graph=True,
-        )
+    model = wrap_ddp(
+        model, local=local, world=world,
+        gradient_as_bucket_view=True, static_graph=True,
+    )
 
     output = Path(args.output_dir)
     if rank == 0:
-        write_run_config(output, {
-            **vars(args),
-            "model": "cmonge",
-            "run_name": output.name,
-            "world_size": world,
-            "split_id": training.split_id,
-            "model_configuration": raw_model(model).configuration(),
-        })
+        write_method_config(
+            output, args, model="cmonge", world=world,
+            training=training,
+            model_configuration=raw_model(model).configuration(),
+        )
 
     last_epoch = max(start_epoch - 1, 0)
     for epoch in range(start_epoch, args.epochs):
@@ -321,22 +290,25 @@ def train(args) -> None:
             if stop_requested or global_step >= args.max_steps:
                 break
         if rank == 0:
-            if (epoch + 1) % args.checkpoint_every_epochs == 0:
-                payload = _checkpoint(
+            save_epoch_checkpoint(
+                output,
+                lambda: _checkpoint(
                     model, optimizer, scheduler, args, epoch, global_step,
                     early_stopping, autoencoder_early_stopping,
-                )
-                atomic_torch_save(
-                    payload, output / "checkpoints" / f"epoch_{epoch + 1:04d}.pt"
-                )
+                ),
+                epoch=epoch,
+                every=args.checkpoint_every_epochs,
+            )
         if early_stopping.stopped or global_step >= args.max_steps:
             break
     if rank == 0:
-        payload = _checkpoint(
-            model, optimizer, scheduler, args, last_epoch, global_step,
-            early_stopping, autoencoder_early_stopping,
+        atomic_torch_save(
+            _checkpoint(
+                model, optimizer, scheduler, args, last_epoch, global_step,
+                early_stopping, autoencoder_early_stopping,
+            ),
+            output / "last.pt",
         )
-        atomic_torch_save(payload, output / "last.pt")
     finish_distributed()
 
 

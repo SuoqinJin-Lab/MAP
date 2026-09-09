@@ -86,10 +86,26 @@ def setup_distributed() -> tuple[int, int, int, torch.device]:
     return rank, world, local, torch.device(f"cuda:{local}")
 
 
-def precision(device: torch.device, amp_dtype: str):
-    if amp_dtype == "bf16" and device.type == "cuda":
+def precision(device: torch.device, amp_dtype):
+    """Autocast context for one precision setting.
+
+    ``amp_dtype`` is either a string (``fp32``/``bf16``/``fp16``) or a
+    ``torch.dtype``.  Non-CUDA devices and fp32 fall back to ``nullcontext``,
+    which matches every method's previous behaviour in one place.
+    """
+    if device.type != "cuda":
+        return nullcontext()
+    if isinstance(amp_dtype, torch.dtype):
+        if amp_dtype == torch.float32:
+            return nullcontext()
+        return torch.autocast(device_type="cuda", dtype=amp_dtype)
+    if amp_dtype == "fp32":
+        return nullcontext()
+    if amp_dtype == "bf16":
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    return nullcontext()
+    if amp_dtype == "fp16":
+        return torch.autocast(device_type="cuda", dtype=torch.float16)
+    raise ValueError(f"Unknown amp_dtype: {amp_dtype!r}")
 
 
 @dataclass
@@ -251,17 +267,195 @@ def finish_distributed() -> None:
         dist.destroy_process_group()
 
 
+RESUME_FORMATS = ("map_method_v2", "map_baseline_v2")
+
+
+def load_hvg_dim(data_dir: str | Path, *, required: int | None = None) -> int:
+    """Read the single HVG dimension from the materialized shapes.
+
+    ``required`` asserts that every population shares that dimension (the
+    CRISP and CMonge rules); ``None`` accepts the first population's value
+    for the other methods.
+    """
+    shapes = json.loads(
+        (Path(data_dir) / "materialized_shapes.json").read_text(encoding="utf-8")
+    )
+    dimensions = {int(value["hvg_dim"]) for value in shapes.values()}
+    if required is not None:
+        if dimensions != {required}:
+            raise ValueError(
+                f"Method requires exactly {required} HVGs; "
+                f"materialized dimensions={sorted(dimensions)}"
+            )
+        return required
+    if not dimensions:
+        raise ValueError("materialized_shapes.json contains no populations")
+    return sorted(dimensions)[0]
+
+
+def validate_resume_checkpoint(
+    checkpoint: dict,
+    model: str,
+    *,
+    formats: tuple[str, ...] = RESUME_FORMATS,
+) -> None:
+    """Reject a resume checkpoint that does not belong to this method."""
+    name = str(model).casefold()
+    if checkpoint.get("format") not in formats or checkpoint.get("model") != name:
+        raise ValueError(f"Resume checkpoint is not a {name} checkpoint")
+
+
+def build_checkpoint(
+    *,
+    model_name: str,
+    model,
+    epoch: int,
+    step: int,
+    args,
+    optimizer=None,
+    scheduler=None,
+    early_stopping=None,
+    extra: dict | None = None,
+) -> dict:
+    """Canonical method checkpoint with one key layout for every baseline.
+
+    The keys here are the resume contract; adding a new method must not
+    invent a different spelling for the same state.
+    """
+    payload = {
+        "format": "map_method_v2",
+        "model": str(model_name).casefold(),
+        "epoch": int(epoch),
+        "global_step": int(step),
+        "model_state_dict": raw_model(model).state_dict(),
+        "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
+        "args": vars(args),
+        "model_configuration": raw_model(model).configuration(),
+        "early_stopping": (
+            early_stopping.state_dict() if early_stopping is not None else None
+        ),
+    }
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def wrap_ddp(
+    model,
+    *,
+    local: int,
+    world: int,
+    static_graph: bool = False,
+    gradient_as_bucket_view: bool = False,
+    broadcast_buffers: bool = False,
+    find_unused_parameters: bool = False,
+) -> torch.nn.Module:
+    """Wrap a model for distributed training with the shared defaults."""
+    if world <= 1:
+        return model
+    return DDP(
+        model,
+        device_ids=[local],
+        output_device=local,
+        broadcast_buffers=broadcast_buffers,
+        gradient_as_bucket_view=gradient_as_bucket_view,
+        static_graph=static_graph,
+        find_unused_parameters=find_unused_parameters,
+    )
+
+
+def write_method_config(
+    output: str | Path,
+    args,
+    *,
+    model: str,
+    world: int,
+    training,
+    model_configuration: dict,
+) -> None:
+    """Write the per-run configuration card shared by every method."""
+    write_run_config(
+        output,
+        {
+            **vars(args),
+            "model": model,
+            "run_name": Path(output).name,
+            "world_size": world,
+            "split_id": training.split_id,
+            "model_configuration": model_configuration,
+        },
+    )
+
+
+def apply_resume_state(
+    model,
+    optimizer,
+    scheduler,
+    early_stopping,
+    checkpoint: dict,
+    *,
+    load_scheduler: bool = True,
+    extra_early_stopping=None,
+) -> tuple[int, int]:
+    """Restore optimizer/scheduler/early-stopping state from a checkpoint.
+
+    Returns the ``(start_epoch, global_step)`` continuation point.  The
+    checkpoint itself has already been validated by
+    :func:`validate_resume_checkpoint`.
+    """
+    model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    if optimizer is not None and "optimizer_state_dict" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scheduler is not None and load_scheduler and "scheduler_state_dict" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    early_stopping.load_state_dict(checkpoint.get("early_stopping"))
+    if extra_early_stopping is not None:
+        extra_early_stopping.load_state_dict(
+            checkpoint.get("autoencoder_early_stopping")
+        )
+    return int(checkpoint["epoch"]) + 1, int(checkpoint["global_step"])
+
+
+def save_epoch_checkpoint(
+    output: str | Path,
+    payload_fn,
+    *,
+    epoch: int,
+    every: int,
+    last_every_epoch: bool = False,
+) -> None:
+    """Save the periodic checkpoint and, optionally, the rolling ``last``."""
+    output = Path(output)
+    if last_every_epoch:
+        atomic_torch_save(payload_fn(), output / "last.pt")
+    if (epoch + 1) % every == 0:
+        atomic_torch_save(
+            payload_fn(), output / "checkpoints" / f"epoch_{epoch + 1:04d}.pt"
+        )
+
+
 __all__ = [
     "MethodAssets",
+    "RESUME_FORMATS",
+    "apply_resume_state",
     "atomic_torch_save",
+    "build_checkpoint",
     "build_loaders",
     "EarlyStopping",
     "finish_distributed",
+    "load_hvg_dim",
     "move_batch",
     "precision",
     "raw_model",
+    "save_epoch_checkpoint",
     "seed_everything",
-    "synchronized_loss",
     "setup_distributed",
+    "synchronized_loss",
+    "validate_resume_checkpoint",
+    "wrap_ddp",
+    "write_method_config",
     "write_run_config",
 ]
+

@@ -1,23 +1,27 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import torch
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 from ..common import (
+    apply_resume_state,
     atomic_torch_save,
+    build_checkpoint,
     build_loaders,
     EarlyStopping,
     finish_distributed,
+    load_hvg_dim,
     move_batch,
     precision,
     raw_model,
+    save_epoch_checkpoint,
     seed_everything,
     synchronized_loss,
     setup_distributed,
-    write_run_config,
+    validate_resume_checkpoint,
+    wrap_ddp,
+    write_method_config,
 )
 from .model import XPert
 from ..utils import method_data_fields
@@ -108,21 +112,10 @@ def load_model(checkpoint, data_dir, hvg_dim: int, populations, device, *, mater
 
 
 def _checkpoint(model, optimizer, scheduler, args, epoch, step, early_stopping=None):
-    implementation = raw_model(model)
-    return {
-        "format": "map_method_v2",
-        "model": "xpert",
-        "epoch": int(epoch),
-        "global_step": int(step),
-        "model_state_dict": implementation.state_dict(),
-        "optimizer_state_dict": optimizer.state_dict(),
-        "scheduler_state_dict": scheduler.state_dict(),
-        "args": vars(args),
-        "model_configuration": implementation.configuration(),
-        "early_stopping": (
-            early_stopping.state_dict() if early_stopping is not None else None
-        ),
-    }
+    return build_checkpoint(
+        model_name="xpert", model=model, epoch=epoch, step=step, args=args,
+        optimizer=optimizer, scheduler=scheduler, early_stopping=early_stopping,
+    )
 
 
 def train(args) -> None:
@@ -147,8 +140,7 @@ def train(args) -> None:
         fields=method_data_fields("xpert", input_mode=args.input_mode),
         dataset_kwargs={"sampling_mode": "cell_abundance"},
     )
-    shapes = json.loads((Path(args.data_dir) / "materialized_shapes.json").read_text())
-    hvg_dim = int(next(iter(shapes.values()))["hvg_dim"])
+    hvg_dim = load_hvg_dim(args.data_dir)
     model = build_model(args.data_dir, hvg_dim, args.populations, material_dir=args.material_dir, **_model_options(args)).to(device)
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -166,33 +158,21 @@ def train(args) -> None:
     )
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
-        if checkpoint.get("format") not in {"map_method_v2", "map_baseline_v2"} or checkpoint.get("model") != "xpert":
-            raise ValueError("Resume checkpoint is not an XPert checkpoint")
-        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        start_epoch = int(checkpoint["epoch"]) + 1
-        global_step = int(checkpoint["global_step"])
-        early_stopping.load_state_dict(checkpoint.get("early_stopping"))
-    if world > 1:
-        model = DDP(
-            model,
-            device_ids=[local],
-            output_device=local,
-            broadcast_buffers=False,
-            gradient_as_bucket_view=True,
-            static_graph=True,
+        validate_resume_checkpoint(checkpoint, "xpert")
+        start_epoch, global_step = apply_resume_state(
+            model, optimizer, scheduler, early_stopping, checkpoint
         )
+    model = wrap_ddp(
+        model, local=local, world=world,
+        gradient_as_bucket_view=True, static_graph=True,
+    )
     output_dir = Path(args.output_dir)
     if rank == 0:
-        write_run_config(output_dir, {
-            **vars(args),
-            "model": "xpert",
-            "run_name": output_dir.name,
-            "world_size": world,
-            "split_id": training.split_id,
-            "model_configuration": raw_model(model).configuration(),
-        })
+        write_method_config(
+            output_dir, args, model="xpert", world=world,
+            training=training,
+            model_configuration=raw_model(model).configuration(),
+        )
     last_epoch = max(start_epoch - 1, 0)
     stop_reason = "max_steps_or_epochs"
     for epoch in range(start_epoch, args.epochs):
@@ -219,15 +199,15 @@ def train(args) -> None:
                 break
         scheduler.step()
         if rank == 0:
-            if (epoch + 1) % args.checkpoint_every_epochs == 0:
-                payload = _checkpoint(
+            save_epoch_checkpoint(
+                output_dir,
+                lambda: _checkpoint(
                     model, optimizer, scheduler, args, epoch, global_step,
                     early_stopping,
-                )
-                atomic_torch_save(
-                    payload,
-                    output_dir / "checkpoints" / f"epoch_{epoch + 1:04d}.pt",
-                )
+                ),
+                epoch=epoch,
+                every=args.checkpoint_every_epochs,
+            )
         if early_stopping.stopped or global_step >= args.max_steps:
             break
     if rank == 0:

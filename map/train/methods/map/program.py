@@ -4,9 +4,7 @@ import argparse
 import json
 import math
 import os
-import random
 import time
-from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +19,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from ...._common.dataset import MAPDataset
 from ....model.map import MAPModel
-from ..common import EarlyStopping, synchronized_loss
+from ..common import EarlyStopping, precision, seed_everything, setup_distributed, synchronized_loss
 
 
 MAP_TRAIN_FIELDS = frozenset({
@@ -93,37 +91,6 @@ def parse_args() -> argparse.Namespace:
         "--compile-mode", choices=("none", "default"), default="default"
     )
     return parser.parse_args()
-
-
-def setup_distributed() -> tuple[int, int, int]:
-    if "RANK" not in os.environ:
-        return 0, 1, 0
-    rank = int(os.environ["RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
-    local_rank = int(os.environ["LOCAL_RANK"])
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        dist.init_process_group("nccl")
-    else:
-        local_rank = 0
-        dist.init_process_group("gloo")
-    return rank, world_size, local_rank
-
-
-def seed_everything(seed: int, rank: int) -> None:
-    effective = int(seed) + int(rank)
-    random.seed(effective)
-    np.random.seed(effective)
-    torch.manual_seed(effective)
-    torch.cuda.manual_seed_all(effective)
-
-
-def precision(device: torch.device, dtype: torch.dtype):
-    return (
-        torch.autocast(device_type="cuda", dtype=dtype)
-        if device.type == "cuda"
-        else nullcontext()
-    )
 
 
 def cosine_schedule(optimizer, warmup_steps: int, total_steps: int, minimum_ratio=0.1):
@@ -279,13 +246,10 @@ def main() -> None:
     if output_dir.exists() and any(output_dir.iterdir()) and not args.resume:
         raise FileExistsError(f"Run directory is not empty: {output_dir}")
 
-    rank, world_size, local_rank = setup_distributed()
+    rank, world_size, local_rank, device = setup_distributed()
     if world_size != 4 and rank == 0:
         print(f"Method 4.4 used four GPUs; current world_size={world_size}", flush=True)
     seed_everything(args.seed, rank)
-    device = torch.device(
-        f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu"
-    )
     amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
 
     common = {
