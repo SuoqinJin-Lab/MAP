@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .._common.feedback import Feedback, StageResult
 from .._common.identifiers import evaluation_identifier
+from .._common.material import resolve_material_dir
 from .._common.paths import DatasetPaths
 from .._common.runner import run_command
 from ..train.splits import resolve_split
@@ -156,14 +157,10 @@ def evaluate_model(
             "--static-token-cache", str(paths.prepared / "knowledge_tokens.pt"),
         ])
     else:
-        selected_representation = str(drug_representation or (
-            "moa" if model == "cmonge" and regime == "unseen_combination" else ""
-        )).casefold()
-        selected_material_dir = (
-            paths.split_material_dir(split_id, "drug_moa")
-            if model == "cmonge" and selected_representation == "moa"
-            else Path(material_dir) if material_dir is not None
-            else paths.prepared
+        selected_material_dir = resolve_material_dir(
+            paths, split_id, model, regime,
+            drug_representation=drug_representation,
+            material_dir=material_dir,
         )
         command.extend(["--material-dir", str(selected_material_dir)])
     if preparation_config_path.is_file():

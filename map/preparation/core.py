@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
-
-from .._common.contracts import load_contract
-from .._common.paths import DatasetPaths
+from .._common.paths import DatasetPaths, project_populations
 from .._common.runtime import asset
 from .embeddings import (
     embed_drugs as _embed_drugs,
@@ -81,27 +78,16 @@ def prepare_condition_embeddings(paths: DatasetPaths, *, populations=None, **kwa
         paths,
         asset(paths, "se600m.safetensors"),
         asset(paths, "Homo_sapiens.GRCh38.gene_symbol_to_embedding_ESM2.pt"),
-        populations=tuple(populations or _populations(paths)),
+        populations=tuple(populations or project_populations(paths)),
         **kwargs,
     )
 
 
 def assemble_condition_embeddings(paths: DatasetPaths, *, populations=None, **kwargs):
     return _merge_state(
-        paths, populations=tuple(populations or _populations(paths)), **kwargs
+        paths, populations=tuple(populations or project_populations(paths)), **kwargs
     )
 
 
 def validate(paths: DatasetPaths, *, split_files, **kwargs):
     return validate_preparation(paths, split_files=tuple(split_files), **kwargs)
-
-
-def _populations(paths: DatasetPaths) -> tuple[str, ...]:
-    shapes = paths.prepared / "materialized_shapes.json"
-    if shapes.is_file():
-        return tuple(json.loads(shapes.read_text(encoding="utf-8")))
-    payload = load_contract(paths.workspace)
-    populations = tuple(str(value) for value in payload.get("populations", ()))
-    if not populations:
-        raise ValueError("The project data contract contains no populations")
-    return populations

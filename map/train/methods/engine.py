@@ -8,6 +8,7 @@ import torch
 
 from ..._common.feedback import Feedback
 from ..._common.identifiers import config_digest, training_identifier
+from ..._common.material import resolve_drug_representation, resolve_material_dir
 from ..._common.paths import DatasetPaths
 from ..._common.runner import run_command
 from ..._common.runtime import validate_resume
@@ -211,8 +212,10 @@ def train_method(
             f"Unknown {model} training parameters: {', '.join(unknown)}"
         )
     params = {**DEFAULTS[model], **overrides}
-    if model == "cmonge" and regime == "unseen_combination" and "drug_representation" not in overrides:
-        params["drug_representation"] = "moa"
+    if model == "cmonge":
+        params["drug_representation"] = resolve_drug_representation(
+            model, regime, params.get("drug_representation")
+        )
     if int(gpus) <= 0 or int(num_workers) < 0:
         raise ValueError("gpus must be positive and num_workers non-negative")
     split_path, split = resolve_split(paths, regime, split_file)
@@ -275,9 +278,10 @@ def train_method(
         str(paths.prepared),
         "--material-dir",
         str(
-            paths.split_material_dir(split_id, "drug_moa")
-            if model == "cmonge" and params.get("drug_representation") == "moa"
-            else paths.prepared
+            resolve_material_dir(
+                paths, split_id, model, regime,
+                drug_representation=params.get("drug_representation"),
+            )
         ),
         "--output-dir",
         str(output),

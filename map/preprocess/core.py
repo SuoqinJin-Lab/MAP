@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 
-from .._common.contracts import load_contract, run_handler_stage
+from .._common.contracts import run_handler_stage
 from .._common.feedback import Feedback
-from .._common.paths import DatasetPaths
+from .._common.paths import DatasetPaths, project_populations
 from .._common.runtime import asset
 from .processing import (
     compute_stats as _stats,
@@ -17,17 +17,6 @@ def _as_paths(value: DatasetPaths | DataSelection) -> DatasetPaths:
     return value.paths if isinstance(value, DataSelection) else value
 
 
-def _populations(paths: DatasetPaths) -> tuple[str, ...]:
-    shapes = paths.prepared / "materialized_shapes.json"
-    if shapes.is_file():
-        return tuple(json.loads(shapes.read_text(encoding="utf-8")))
-    payload = load_contract(paths.workspace)
-    populations = tuple(str(value) for value in payload.get("populations", ()))
-    if not populations:
-        raise ValueError("The project data contract contains no populations")
-    return populations
-
-
 def _ensure_stats(
     paths: DatasetPaths | DataSelection, *, workers: int = 8, populations=None,
     hvg_batch_key: str | None = "population",
@@ -35,7 +24,7 @@ def _ensure_stats(
     if populations is None and isinstance(paths, DataSelection):
         populations = paths.populations
     paths = _as_paths(paths)
-    populations = tuple(populations or _populations(paths))
+    populations = tuple(populations or project_populations(paths))
     manifest_path = paths.prepared / "stats_manifest.json"
     filter_manifest = paths.prepared / "condition_filter.json"
     if not filter_manifest.is_file():

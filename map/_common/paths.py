@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -121,3 +122,15 @@ def experiment_paths(
         workspace=workspace,
         frozen_models=Path(frozen_models),
     )
+
+
+def project_populations(paths: DatasetPaths) -> tuple[str, ...]:
+    """Populations from the materialized shapes or the project contract."""
+    shapes = paths.prepared / "materialized_shapes.json"
+    if shapes.is_file():
+        return tuple(json.loads(shapes.read_text(encoding="utf-8")))
+    payload = load_contract(paths.workspace)
+    populations = tuple(str(value) for value in payload.get("populations", ()))
+    if not populations:
+        raise ValueError("The project data contract contains no populations")
+    return populations

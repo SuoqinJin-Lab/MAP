@@ -38,6 +38,17 @@ def _handler_factory(value: str):
     return getattr(importlib.import_module(module_name), attribute)
 
 
+def _experiment_paths(args, *, frozen=None):
+    """Resolve project paths for preparation/train/eval commands."""
+    from ._common.paths import experiment_paths
+
+    frozen_root = Path(frozen) if frozen is not None else Path(args.storage) / "frozen_models"
+    return experiment_paths(
+        Path(args.storage) / "projects" / args.project_name,
+        frozen_root,
+    )
+
+
 def _preprocess_flow(args):
     options = {}
     if args.handler_config:
@@ -364,12 +375,7 @@ def main(argv=None) -> None:
         "prepare-state-inputs",
         "prepare-hvg-expression",
     }:
-        from ._common.paths import experiment_paths
-
-        artifact_paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.storage) / "frozen_models",
-        )
+        artifact_paths = _experiment_paths(args)
         function = {
             "prepare-cell-metadata": preparation.prepare_cell_metadata,
             "prepare-state-inputs": preparation.prepare_state_inputs,
@@ -396,12 +402,7 @@ def main(argv=None) -> None:
         "prepare-expression-bins",
     }
     if args.stage == "preparation" and args.command in artifact_commands:
-        from ._common.paths import experiment_paths
-
-        artifact_paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.storage) / "frozen_models",
-        )
+        artifact_paths = _experiment_paths(args)
         if args.command == "prepare-ecfp4-features":
             preparation.prepare_ecfp4_features(
                 artifact_paths, overwrite=args.overwrite
@@ -468,12 +469,7 @@ def main(argv=None) -> None:
         return
 
     if args.stage == "preparation" and args.command == "validate-method":
-        from ._common.paths import experiment_paths
-
-        artifact_paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.frozen_models or (Path(args.storage) / "frozen_models")),
-        )
+        artifact_paths = _experiment_paths(args, frozen=args.frozen_models)
         options = {
             key: value
             for key, value in {
@@ -495,12 +491,7 @@ def main(argv=None) -> None:
         )
         return
     if args.stage == "preparation":
-        from ._common.paths import experiment_paths
-
-        paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.storage) / "frozen_models",
-        )
+        paths = _experiment_paths(args)
         if args.command == "build-sampling-index":
             preparation.build_sampling_index(paths, workers=args.workers)
         elif args.command == "create-split":
@@ -546,11 +537,7 @@ def main(argv=None) -> None:
         return
 
     if args.stage == "train":
-        from ._common.paths import experiment_paths
-        paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.storage) / "frozen_models",
-        )
+        paths = _experiment_paths(args)
         common = dict(
             model=args.model, gpus=args.gpus, num_workers=args.num_workers,
             run_name=args.run_name, resume=args.resume, dry_run=args.dry_run,
@@ -607,11 +594,7 @@ def main(argv=None) -> None:
         )
         return
     if args.command == "run":
-        from ._common.paths import experiment_paths
-        paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.storage) / "frozen_models",
-        )
+        paths = _experiment_paths(args)
         eval.run(
             paths, run_name=args.run_name, model=args.model, regime=args.regime,
             checkpoint=args.checkpoint, split_file=args.split_file,
@@ -622,11 +605,7 @@ def main(argv=None) -> None:
             dry_run=args.dry_run,
         )
     else:
-        from ._common.paths import experiment_paths
-        paths = experiment_paths(
-            Path(args.storage) / "projects" / args.project_name,
-            Path(args.storage) / "frozen_models",
-        )
+        paths = _experiment_paths(args)
         eval.analyze(
             paths, prediction_file=args.prediction_file,
             evaluation_files=args.evaluation_files,
